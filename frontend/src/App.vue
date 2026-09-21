@@ -172,6 +172,7 @@ function setupDirectTransfer(initiator: boolean) {
       URL.revokeObjectURL(url)
     },
     (progress) => { transferProgress = progress },
+    (message) => window.alert(message),
   )
   directTransfer.start(initiator).catch((error) => window.alert(String(error)))
 }

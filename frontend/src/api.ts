@@ -197,6 +197,7 @@ export class DirectTransfer {
     private readonly onReady: () => void,
     private readonly onIncomingFile: (file: TransferFile, blob: Blob) => void,
     private readonly onProgress: (progress: number) => void,
+    private readonly onTransferError?: (message: string) => void,
   ) {
     this.peer = new RTCPeerConnection({
       iceServers,
@@ -257,24 +258,42 @@ export class DirectTransfer {
 
   private handleData(data: string | ArrayBuffer) {
     if (typeof data === 'string') {
-      const message = JSON.parse(data) as { kind: string; name?: string; size?: number; type?: string }
+      let message: { kind: string; name?: string; size?: number; type?: string }
+      try {
+        message = JSON.parse(data)
+      } catch {
+        this.failIncoming('The received transfer metadata is invalid.')
+        return
+      }
       if (message.kind === 'file') {
         const incoming = {
           name: message.name || '',
           size: message.size ?? -1,
           type: message.type || 'application/octet-stream',
         }
-        if (validateTransferFile(incoming)) return
+        const validationError = validateTransferFile(incoming)
+        if (validationError) {
+          this.failIncoming('The received file was rejected.')
+          return
+        }
         this.incoming = incoming
         this.received = []
         this.receivedBytes = 0
       } else if (message.kind === 'file-end' && this.incoming) {
+        if (this.receivedBytes !== this.incoming.size) {
+          this.failIncoming('The file transfer was incomplete.')
+          return
+        }
         this.onIncomingFile(this.incoming, new Blob(this.received, { type: this.incoming.type }))
-        this.incoming = null
+        this.resetIncoming()
       }
       return
     }
     if (!this.incoming) return
+    if (this.receivedBytes + data.byteLength > this.incoming.size) {
+      this.failIncoming('The received file was larger than expected.')
+      return
+    }
     this.received.push(data)
     this.receivedBytes += data.byteLength
     this.onProgress(this.receivedBytes / this.incoming.size)
@@ -282,5 +301,16 @@ export class DirectTransfer {
 
   private async flushCandidates() {
     for (const candidate of this.pendingCandidates.splice(0)) await this.peer.addIceCandidate(candidate)
+  }
+
+  private failIncoming(message: string) {
+    this.resetIncoming()
+    this.onTransferError?.(message)
+  }
+
+  private resetIncoming() {
+    this.received = []
+    this.receivedBytes = 0
+    this.incoming = null
   }
 }
