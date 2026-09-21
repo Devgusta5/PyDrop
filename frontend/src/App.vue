@@ -18,8 +18,12 @@ const spaceMount = ref<HTMLElement | null>(null)
 const spacePhase = ref<'idle' | 'creating' | 'waiting' | 'connected'>('idle')
 const serverStatus = ref<'idle' | 'checking' | 'waking_up' | 'ready' | 'connecting_ws' | 'connected' | 'failed'>('idle')
 const serverElapsedSeconds = ref(0)
+const roomFull = ref(false)
 let roomConnection: ReturnType<typeof api.connectRoomSocket> | null = null
 let directTransfer: api.DirectTransfer | null = null
+let reconnectTimer = 0
+let reconnectAttempts = 0
+let intentionalDisconnect = false
 
 let renderer: THREE.WebGLRenderer | null = null
 let scene: THREE.Scene | null = null
@@ -88,8 +92,8 @@ async function prepareBackend() {
 
 async function joinRoom() {
   const code = window.prompt('Enter the room code')?.trim().toUpperCase()
-  if (!code || !/^[A-Z0-9]{5}$/.test(code)) {
-    if (code) window.alert('Room codes have five letters or numbers.')
+  if (!code || !/^[A-Z0-9]{8}$/.test(code)) {
+    if (code) window.alert('Room codes have eight letters or numbers.')
     return
   }
   roomCode.value = code
@@ -104,9 +108,13 @@ async function joinRoom() {
 }
 
 function connectToRoom() {
+  window.clearTimeout(reconnectTimer)
   serverStatus.value = 'connecting_ws'
+  intentionalDisconnect = true
   roomConnection?.disconnect()
   directTransfer?.close()
+  directTransfer = null
+  intentionalDisconnect = false
   roomConnection = api.connectRoomSocket(roomCode.value, {
     onRoomState: (sessions, initiator) => {
       if (sessions > 1) {
@@ -114,6 +122,7 @@ function connectToRoom() {
         view.value = 'connected'
         spacePhase.value = 'connected'
         serverStatus.value = 'connected'
+        reconnectAttempts = 0
       }
     },
     onUserJoined: (sessions) => {
@@ -122,13 +131,28 @@ function connectToRoom() {
         view.value = 'connected'
         spacePhase.value = 'connected'
         serverStatus.value = 'connected'
+        reconnectAttempts = 0
       }
     },
     onSignal: (message) => {
       directTransfer?.handleSignal(message).catch((error) => window.alert(String(error)))
     },
     onDisconnect: () => {
-      if (view.value === 'connected') window.alert('The signaling connection was closed.')
+      if (intentionalDisconnect || roomFull.value) return
+      if (reconnectAttempts >= 3) {
+        serverStatus.value = 'failed'
+        return
+      }
+      reconnectAttempts += 1
+      serverStatus.value = 'connecting_ws'
+      reconnectTimer = window.setTimeout(() => connectToRoom(), reconnectAttempts * 1500)
+    },
+    onClose: (code) => {
+      if (code === 1008) {
+        roomFull.value = true
+        serverStatus.value = 'failed'
+        window.clearTimeout(reconnectTimer)
+      }
     },
   })
 }
@@ -153,6 +177,8 @@ function setupDirectTransfer(initiator: boolean) {
 }
 
 function reset() {
+  intentionalDisconnect = true
+  window.clearTimeout(reconnectTimer)
   roomConnection?.disconnect()
   directTransfer?.close()
   roomConnection = null
@@ -163,6 +189,8 @@ function reset() {
   isTransferring.value = false
   serverStatus.value = 'idle'
   serverElapsedSeconds.value = 0
+  roomFull.value = false
+  reconnectAttempts = 0
 }
 
 async function prepareOnStartup() {
@@ -594,8 +622,9 @@ onMounted(() => {
         <strong>{{ roomCode || '...' }}</strong>
         <div class="code-meta">
           <span class="pulse-dot"></span>
-          {{ serverStatus === 'checking' ? 'checking server...' : serverStatus === 'waking_up' ? 'starting server...' : serverStatus === 'connecting_ws' ? 'connecting...' : serverStatus === 'failed' ? 'could not connect' : 'waiting for device' }}
+          {{ roomFull ? 'room is full' : serverStatus === 'checking' ? 'checking server...' : serverStatus === 'waking_up' ? 'starting server...' : serverStatus === 'connecting_ws' ? 'connecting...' : serverStatus === 'failed' ? 'could not connect' : 'waiting for device' }}
         </div>
+        <small v-if="roomFull" class="server-elapsed">This room already has two connected devices.</small>
         <small v-if="isPreparingBackend" class="server-elapsed">Elapsed time: {{ serverElapsedSeconds }}s</small>
       </div>
       <div class="lobby-actions">

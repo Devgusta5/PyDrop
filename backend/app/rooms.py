@@ -10,7 +10,7 @@ import time
 
 from fastapi import HTTPException
 
-ROOM_CODE_LENGTH = 5
+ROOM_CODE_LENGTH = 8
 ALPHABET = string.ascii_uppercase + string.digits
 ROOM_LIFETIME_SECONDS = 60 * 60
 

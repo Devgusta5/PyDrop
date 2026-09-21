@@ -129,6 +129,7 @@ export function connectRoomSocket(
     onRoomState?: (sessions: number, initiator: boolean) => void
     onSignal?: (message: SignalMessage) => void
     onDisconnect?: () => void
+    onClose?: (code: number, reason: string) => void
   },
 ): { send: (message: SignalMessage) => void; disconnect: () => void } {
   const signalingUrl = apiBaseUrl
@@ -170,7 +171,10 @@ export function connectRoomSocket(
     }
   })
 
-  socket.addEventListener('close', () => handlers.onDisconnect?.())
+  socket.addEventListener('close', (event) => {
+    handlers.onClose?.(event.code, event.reason)
+    handlers.onDisconnect?.()
+  })
 
   return { send, disconnect: () => socket.close() }
 }

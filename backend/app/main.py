@@ -9,9 +9,11 @@ O que este arquivo faz:
 
 import asyncio
 import os
+import time
 from contextlib import asynccontextmanager
+from collections import defaultdict, deque
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import rooms as rooms_mod
@@ -33,6 +35,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PyDrop", lifespan=lifespan)
+ROOM_CREATION_LIMIT = 10
+ROOM_CREATION_WINDOW_SECONDS = 60
+room_creation_attempts: dict[str, deque[float]] = defaultdict(deque)
 
 default_origins = [
     "http://localhost:5173",
@@ -63,8 +68,18 @@ async def health():
 
 
 @app.post("/rooms")
-def create_room():
+def create_room(request: Request):
     """Cria um room novo e devolve o código pra compartilhar."""
+    client_key = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    attempts = room_creation_attempts[client_key]
+    while attempts and now - attempts[0] >= ROOM_CREATION_WINDOW_SECONDS:
+        attempts.popleft()
+    if len(attempts) >= ROOM_CREATION_LIMIT:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=429, detail="Too many room creation attempts")
+    attempts.append(now)
     room = rooms_mod.create_room()
     return {"code": room["code"]}
 

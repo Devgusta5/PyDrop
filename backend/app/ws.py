@@ -11,6 +11,8 @@ candidates). File bytes travel through the browser-to-browser data channel.
 """
 
 import json
+import time
+from collections import deque
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -19,6 +21,8 @@ from . import rooms as rooms_mod
 router = APIRouter()
 MAX_ROOM_CONNECTIONS = 2
 MAX_SIGNAL_MESSAGE_BYTES = 64 * 1024
+MAX_SIGNAL_MESSAGES = 30
+SIGNAL_RATE_WINDOW_SECONDS = 10
 SIGNAL_TYPES = {"offer", "answer", "ice-candidate"}
 
 # code -> set de conexões websocket ativas ("quem está ouvindo esse room")
@@ -65,6 +69,16 @@ def _is_valid_signal(message: object) -> bool:
     return isinstance(message.get(payload_key), dict)
 
 
+def _is_rate_limited(timestamps: deque[float]) -> bool:
+    now = time.monotonic()
+    while timestamps and now - timestamps[0] >= SIGNAL_RATE_WINDOW_SECONDS:
+        timestamps.popleft()
+    if len(timestamps) >= MAX_SIGNAL_MESSAGES:
+        return True
+    timestamps.append(now)
+    return False
+
+
 @router.websocket("/rooms/{code}/ws")
 async def handle_room_ws(ws: WebSocket, code: str) -> None:
     """Loop principal: fica ouvindo a conexão até alguém fechar. 🫀"""
@@ -91,9 +105,13 @@ async def handle_room_ws(ws: WebSocket, code: str) -> None:
     )
 
     # Fica ouvindo sinalizacao ate o cliente fechar a aba / cair a internet
+    signal_timestamps: deque[float] = deque()
     try:
         while True:
             raw_message = await ws.receive_text()
+            if _is_rate_limited(signal_timestamps):
+                await ws.close(code=1008, reason="Too many signaling messages")
+                return
             if len(raw_message.encode("utf-8")) > MAX_SIGNAL_MESSAGE_BYTES:
                 await ws.close(code=1009, reason="Signaling message is too large")
                 return
