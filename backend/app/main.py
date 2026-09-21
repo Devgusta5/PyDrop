@@ -34,12 +34,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="PyDrop", lifespan=lifespan)
 
-frontend_origin = os.getenv("FRONTEND_ORIGIN", "*")
-allowed_origins = [origin.strip() for origin in frontend_origin.split(",") if origin.strip()]
-if frontend_origin != "*" and "https://pydrop.vercel.app" not in allowed_origins:
-    allowed_origins.append("https://pydrop.vercel.app")
+default_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://pydrop.vercel.app",
+]
+configured_origins = os.getenv("FRONTEND_ORIGIN", "")
+allowed_origins = default_origins + [
+    origin.strip()
+    for origin in configured_origins.split(",")
+    if origin.strip() and origin.strip() not in default_origins
+]
 
-# CORS — por enquanto liberado pra qualquer origem (fácil pros testes de dev)
+# CORS is restricted to known frontend origins.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
