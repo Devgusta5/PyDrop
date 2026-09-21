@@ -17,13 +17,14 @@ from collections import deque
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from . import rooms as rooms_mod
+from . import metrics as metrics_mod
 
 router = APIRouter()
 MAX_ROOM_CONNECTIONS = 2
 MAX_SIGNAL_MESSAGE_BYTES = 64 * 1024
 MAX_SIGNAL_MESSAGES = 30
 SIGNAL_RATE_WINDOW_SECONDS = 10
-SIGNAL_TYPES = {"offer", "answer", "ice-candidate"}
+SIGNAL_TYPES = {"offer", "answer", "ice-candidate", "transfer-completed"}
 
 # code -> set de conexões websocket ativas ("quem está ouvindo esse room")
 room_connections: dict[str, set[WebSocket]] = {}
@@ -65,6 +66,8 @@ def _is_valid_signal(message: object) -> bool:
     message_type = message.get("type")
     if message_type not in SIGNAL_TYPES:
         return False
+    if message_type == "transfer-completed":
+        return isinstance(message.get("transfer_id"), str) and 1 <= len(message["transfer_id"]) <= 100
     payload_key = "candidate" if message_type == "ice-candidate" else "description"
     return isinstance(message.get(payload_key), dict)
 
@@ -123,7 +126,11 @@ async def handle_room_ws(ws: WebSocket, code: str) -> None:
             if not _is_valid_signal(message):
                 await ws.close(code=1008, reason="Invalid signaling message")
                 return
-            await _broadcast(code, message, excluded=ws)
+            if message["type"] == "transfer-completed":
+                count = metrics_mod.record_transfer()
+                await _broadcast(code, {"type": "transfer-count", "count": count})
+            else:
+                await _broadcast(code, message, excluded=ws)
     except WebSocketDisconnect:
         pass
     finally:

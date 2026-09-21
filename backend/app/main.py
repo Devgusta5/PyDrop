@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import rooms as rooms_mod
+from . import metrics as metrics_mod
 from .ws import router as ws_router
 
 async def cleanup_rooms_loop():
@@ -65,6 +66,11 @@ app.include_router(ws_router)
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/stats")
+def stats():
+    return {"completed_transfers": metrics_mod.get_transfer_count()}
 
 
 @app.post("/rooms")
