@@ -15,6 +15,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from . import rooms as rooms_mod
 
 router = APIRouter()
+MAX_ROOM_CONNECTIONS = 2
 
 # code -> set de conexões websocket ativas ("quem está ouvindo esse room")
 room_connections: dict[str, set[WebSocket]] = {}
@@ -57,6 +58,10 @@ async def handle_room_ws(ws: WebSocket, code: str) -> None:
     rooms_mod.get_room(code)  # 404 se o room não existe ou expirou
 
     await ws.accept()
+    if _sessions_count(code) >= MAX_ROOM_CONNECTIONS:
+        await ws.close(code=1008, reason="Room already has two connected devices")
+        return
+
     _subscribe(code, ws)
     sessions = _sessions_count(code)
 
