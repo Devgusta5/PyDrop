@@ -38,7 +38,7 @@ export interface TransferStats {
   completed_transfers: number
 }
 
-const apiBaseUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
+const apiBaseUrl = (import.meta.env.VITE_API_URL ?? 'https://pydrop.onrender.com').replace(/\/$/, '')
 const iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }]
 const turnUrl = import.meta.env.VITE_TURN_URL?.trim()
 const turnUsername = import.meta.env.VITE_TURN_USERNAME?.trim()

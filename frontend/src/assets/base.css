@@ -1,11 +1,26 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;650;750&family=JetBrains+Mono:wght@500;700&family=Space+Grotesk:wght@500;700&display=swap');
+
 :root {
-  --ink: #f4f1ea;
-  --muted: #9f9a91;
-  --night: #151614;
-  --panel: #20221e;
-  --line: rgba(244, 241, 234, 0.14);
-  --lime: #d6e86a;
-  --coral: #e78363;
+  --deep-space: #0b0f12;
+  --graphite: #12181c;
+  --slate-charcoal: #1a2328;
+  --lime-flow: #b7f34a;
+  --coral-signal: #ff6b5e;
+  --soft-white: #f4f7f2;
+  --muted-gray: #9aa6a8;
+  --quiet-border: #273238;
+  --transfer-green: #8ee36b;
+  --error-red: #ff5964;
+  --font-brand: 'Space Grotesk', 'Inter', sans-serif;
+  --font-ui: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  --ink: var(--soft-white);
+  --muted: var(--muted-gray);
+  --night: var(--deep-space);
+  --panel: var(--graphite);
+  --line: var(--quiet-border);
+  --lime: var(--lime-flow);
+  --coral: var(--coral-signal);
 }
 
 *,
@@ -18,10 +33,10 @@
 
 body {
   min-height: 100vh;
-  color: var(--ink);
-  background: var(--night);
+  color: var(--soft-white);
+  background: var(--deep-space);
   line-height: 1.5;
-  font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+  font-family: var(--font-ui);
   font-size: 15px;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;

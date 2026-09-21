@@ -2,6 +2,7 @@
 
 interface ImportMetaEnv {
 	readonly VITE_API_URL?: string
+	readonly VITE_PUBLIC_APP_URL?: string
 	readonly VITE_TURN_URL?: string
 	readonly VITE_TURN_USERNAME?: string
 	readonly VITE_TURN_CREDENTIAL?: string
