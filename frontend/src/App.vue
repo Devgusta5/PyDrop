@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import * as THREE from 'three'
+import QRCode from 'qrcode'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as api from './api'
 
@@ -15,6 +16,7 @@ const roomCode = ref('')
 const roomFiles = ref<api.TransferFile[]>([])
 const threeMount = ref<HTMLElement | null>(null)
 const spaceMount = ref<HTMLElement | null>(null)
+const qrCanvas = ref<HTMLCanvasElement | null>(null)
 const spacePhase = ref<'idle' | 'creating' | 'waiting' | 'connected'>('idle')
 const serverStatus = ref<'idle' | 'checking' | 'waking_up' | 'ready' | 'connecting_ws' | 'connected' | 'failed'>('idle')
 const serverElapsedSeconds = ref(0)
@@ -72,6 +74,8 @@ async function createRoom() {
     const result = await api.createRoom()
     roomCode.value = result.code
     spacePhase.value = 'waiting'
+    await nextTick()
+    await renderRoomQrCode()
     connectToRoom()
   } catch {
     serverStatus.value = 'failed'
@@ -91,8 +95,8 @@ async function prepareBackend() {
   })
 }
 
-async function joinRoom() {
-  const code = window.prompt('Enter the room code')?.trim().toUpperCase()
+async function joinRoomByCode(rawCode: string) {
+  const code = rawCode.trim().toUpperCase()
   if (!code || !/^[A-Z0-9]{8}$/.test(code)) {
     if (code) window.alert('Room codes have eight letters or numbers.')
     return
@@ -106,6 +110,23 @@ async function joinRoom() {
       connectToRoom()
     })
     .catch(() => { serverStatus.value = 'failed' })
+}
+
+function joinRoom() {
+  const code = window.prompt('Enter the room code')
+  if (code) joinRoomByCode(code)
+}
+
+async function renderRoomQrCode() {
+  if (!qrCanvas.value || !roomCode.value) return
+  const joinUrl = new URL(window.location.href)
+  joinUrl.search = ''
+  joinUrl.searchParams.set('room', roomCode.value)
+  await QRCode.toCanvas(qrCanvas.value, joinUrl.toString(), {
+    width: 150,
+    margin: 2,
+    color: { dark: '#18202b', light: '#ffffff' },
+  })
 }
 
 function connectToRoom() {
@@ -581,7 +602,9 @@ onBeforeUnmount(() => {
 })
 onMounted(() => {
   if (immersiveMode.value && view.value === 'start') nextTick(createSpaceScene)
-  prepareOnStartup()
+  const roomCodeFromUrl = new URLSearchParams(window.location.search).get('room')
+  if (roomCodeFromUrl) joinRoomByCode(roomCodeFromUrl)
+  else prepareOnStartup()
 })
 </script>
 
@@ -645,7 +668,7 @@ onMounted(() => {
         <button v-else class="button button-primary" type="button" disabled>{{ roomCode ? 'waiting for another device' : 'connecting to server' }} <span>...</span></button>
         <button class="button button-quiet" type="button" @click="reset">cancel</button>
       </div>
-      <div class="qr-placeholder"><span class="qr-grid"></span><div><strong>or scan to join</strong><small>QR code coming soon</small></div></div>
+      <div class="qr-placeholder"><canvas ref="qrCanvas" aria-label="QR code to join this room"></canvas><div><strong>scan to join this room</strong><small>Open your phone camera and scan the code.</small></div></div>
     </section>
 
     <section v-else class="connected-view page-enter" :class="{ 'simple-mode': !immersiveMode }">
@@ -723,7 +746,7 @@ h1 em { color: var(--coral); font-family: Georgia, serif; font-weight: 400; }
 .room-lobby { align-items: center; display: flex; flex-direction: column; justify-content: center; min-height: calc(100vh - 105px); text-align: center; }
 .room-lobby .eyebrow { margin-bottom: 20px; }.room-lobby h1 { font-size: clamp(3rem, 6vw, 5.5rem); }.room-lobby > p { color: var(--muted); margin: 23px 0 35px; }
 .code-panel { background: rgba(32,34,30,.8); border: 1px solid var(--line); margin-bottom: 29px; padding: 25px 50px 20px; }
-.code-label, .dock-kicker { color: var(--muted); display: block; font-size: 10px; letter-spacing: .18em; text-transform: uppercase; }.code-panel strong { display: block; font-size: clamp(2.8rem, 6vw, 5rem); letter-spacing: .12em; line-height: 1.1; margin: 10px 0 13px; }.code-meta { align-items: center; color: var(--lime); display: flex; font-size: 11px; gap: 8px; justify-content: center; }.pulse-dot { animation: pulse 1.8s infinite; }.qr-placeholder { align-items: center; color: var(--muted); display: flex; gap: 17px; margin-top: 52px; text-align: left; }.qr-placeholder strong, .qr-placeholder small { display: block; font-size: 11px; font-weight: 400; }.qr-placeholder small { color: #6f7068; margin-top: 4px; }.qr-grid { background: repeating-linear-gradient(90deg, var(--ink) 0 3px, transparent 3px 6px), repeating-linear-gradient(0deg, var(--ink) 0 3px, transparent 3px 6px); border: 7px solid var(--ink); height: 49px; opacity: .8; width: 49px; }
+.code-label, .dock-kicker { color: var(--muted); display: block; font-size: 10px; letter-spacing: .18em; text-transform: uppercase; }.code-panel strong { display: block; font-size: clamp(2.8rem, 6vw, 5rem); letter-spacing: .12em; line-height: 1.1; margin: 10px 0 13px; }.code-meta { align-items: center; color: var(--lime); display: flex; font-size: 11px; gap: 8px; justify-content: center; }.pulse-dot { animation: pulse 1.8s infinite; }.qr-placeholder { align-items: center; color: var(--muted); display: flex; gap: 17px; margin-top: 52px; text-align: left; }.qr-placeholder canvas { background: #fff; display: block; height: 150px; width: 150px; }.qr-placeholder strong, .qr-placeholder small { display: block; font-size: 11px; font-weight: 400; }.qr-placeholder small { color: #6f7068; margin-top: 4px; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(214,232,106,.08); opacity: .45; } }
 .connected-view { padding-top: 7vh; }.scene-header { align-items: flex-end; display: flex; justify-content: space-between; }.scene-header .eyebrow { margin-bottom: 18px; }.scene-header h1 { font-size: clamp(2.8rem, 5vw, 5rem); }.exit-button { background: transparent; border: 1px solid var(--line); color: var(--muted); font-size: 11px; padding: 10px 13px; }.exit-button span { color: var(--coral); font-size: 18px; margin-left: 13px; vertical-align: -2px; }
 .room-scene { background: linear-gradient(145deg, rgba(39,43,33,.9), rgba(22,24,22,.96)); border: 1px solid var(--line); height: min(43vw, 495px); margin-top: 38px; overflow: hidden; position: relative; }.room-scene::after { background: linear-gradient(transparent 55%, rgba(10,11,10,.9)); content: ''; inset: 0; pointer-events: none; position: absolute; }.wall-line { background: rgba(244,241,234,.08); height: 1px; left: 0; position: absolute; right: 0; top: 62%; transform: skewY(-8deg); }.window-shape { border: 1px solid rgba(244,241,234,.14); height: 31%; left: 10%; position: absolute; top: 13%; transform: perspective(180px) rotateY(-15deg); width: 19%; }.window-shape i { border-left: 1px solid rgba(244,241,234,.12); bottom: 0; position: absolute; top: 0; width: 33%; }.window-shape i:nth-child(1) { left: 33%; }.window-shape i:nth-child(2) { left: 66%; }.window-shape i:nth-child(3) { border-bottom: 1px solid rgba(244,241,234,.12); border-left: 0; left: 0; right: 0; top: 50%; }.lamp-shape { background: var(--coral); border-radius: 50% 50% 5px 5px; box-shadow: 0 0 90px 25px rgba(231,131,99,.12); height: 43px; opacity: .55; position: absolute; right: 19%; top: 15%; width: 72px; }.lamp-shape::after { background: var(--coral); content: ''; height: 80px; left: 35px; opacity: .3; position: absolute; top: 40px; width: 2px; }.shelf-shape { border-bottom: 3px solid #45493c; height: 20%; position: absolute; right: 6%; top: 40%; width: 20%; }.shelf-shape::after { background: #373b32; bottom: -39px; content: ''; height: 38px; left: 12%; position: absolute; width: 3px; }.shelf-shape i { background: #9d7657; bottom: 3px; height: 15px; position: absolute; width: 17px; }.shelf-shape i:nth-child(1) { left: 11%; }.shelf-shape i:nth-child(2) { height: 25px; left: 40%; }.shelf-shape i:nth-child(3) { left: 70%; }
