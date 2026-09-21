@@ -25,6 +25,61 @@ export interface CreateRoomResult {
 }
 
 const apiBaseUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
+const backendReadyCacheMs = 30_000
+let backendReadyAt = 0
+let backendReadyRequest: Promise<void> | null = null
+
+export type BackendPreparationState = 'checking' | 'waking_up' | 'ready' | 'failed'
+
+export async function ensureBackendReady(
+  onState?: (state: BackendPreparationState, elapsedSeconds: number) => void,
+): Promise<void> {
+  if (Date.now() - backendReadyAt < backendReadyCacheMs) {
+    onState?.('ready', 0)
+    return
+  }
+  if (backendReadyRequest) return backendReadyRequest
+
+  const startedAt = Date.now()
+  const update = (state: BackendPreparationState) => {
+    onState?.(state, Math.floor((Date.now() - startedAt) / 1000))
+  }
+
+  backendReadyRequest = (async () => {
+    update('checking')
+    const maxAttempts = 10
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const controller = new AbortController()
+      const timeout = window.setTimeout(() => controller.abort(), 8_000)
+      try {
+        const response = await fetch(`${apiBaseUrl}/health`, { signal: controller.signal })
+        if (response.ok) {
+          const body = await response.json() as { status?: string }
+          if (body.status === 'ok') {
+            backendReadyAt = Date.now()
+            update('ready')
+            return
+          }
+        }
+      } catch {
+        // Render may be waking up or the request may have timed out.
+      } finally {
+        window.clearTimeout(timeout)
+      }
+
+      update('waking_up')
+      if (attempt < maxAttempts) {
+        await new Promise((resolve) => window.setTimeout(resolve, 3_000))
+      }
+    }
+    update('failed')
+    throw new Error('The server did not become available')
+  })().finally(() => {
+    backendReadyRequest = null
+  })
+
+  return backendReadyRequest
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, init)

@@ -34,8 +34,8 @@ app.include_router(ws_router)
 
 
 @app.get("/health")
-def health():
-    return {"message": "PyDrop ta on Lil Bro"}
+async def health():
+    return {"status": "ok"}
 
 
 @app.post("/rooms")

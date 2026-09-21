@@ -16,7 +16,8 @@ const roomFiles = ref<api.TransferFile[]>([])
 const threeMount = ref<HTMLElement | null>(null)
 const spaceMount = ref<HTMLElement | null>(null)
 const spacePhase = ref<'idle' | 'creating' | 'waiting' | 'connected'>('idle')
-const serverStatus = ref<'idle' | 'waking' | 'connecting' | 'ready' | 'failed'>('idle')
+const serverStatus = ref<'idle' | 'checking' | 'waking_up' | 'ready' | 'connecting_ws' | 'connected' | 'failed'>('idle')
+const serverElapsedSeconds = ref(0)
 let roomConnection: ReturnType<typeof api.connectRoomSocket> | null = null
 let directTransfer: api.DirectTransfer | null = null
 
@@ -42,32 +43,47 @@ let spaceTargetMouse = { x: 0, y: 0 }
 let spaceStartedAt = 0
 
 const fileLabel = computed(() => selectedFile.value?.name ?? 'solte um arquivo aqui')
+const isPreparingBackend = computed(() => ['checking', 'waking_up', 'connecting_ws'].includes(serverStatus.value))
+const preparationTitle = computed(() => {
+  if (serverStatus.value === 'checking') return 'Checking server...'
+  if (serverStatus.value === 'waking_up') return 'Starting server...'
+  if (serverStatus.value === 'connecting_ws') return 'Connecting...'
+  if (serverStatus.value === 'failed') return 'Unable to connect to the server'
+  return 'Server ready'
+})
+const preparationMessage = computed(() => {
+  if (serverStatus.value === 'checking') return 'We are checking whether PyDrop is ready.'
+  if (serverStatus.value === 'waking_up') return 'The server is starting. This usually takes a few seconds.'
+  if (serverStatus.value === 'connecting_ws') return 'The server is ready. Establishing a secure connection.'
+  if (serverStatus.value === 'failed') return 'We tried automatically, but the server did not respond.'
+  return 'You can start your transfer.'
+})
 
 async function createRoom() {
   view.value = 'room'
   spacePhase.value = 'creating'
-  serverStatus.value = 'waking'
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      const result = await api.createRoom()
-      roomCode.value = result.code
-      serverStatus.value = 'ready'
-      spacePhase.value = 'waiting'
-      connectToRoom()
-      return
-    } catch (error) {
-      if (attempt === 3) {
-        serverStatus.value = 'failed'
-        return
-      }
-      serverStatus.value = 'connecting'
-      await new Promise((resolve) => window.setTimeout(resolve, attempt * 1500))
-    }
+  try {
+    await prepareBackend()
+    const result = await api.createRoom()
+    roomCode.value = result.code
+    spacePhase.value = 'waiting'
+    connectToRoom()
+  } catch {
+    serverStatus.value = 'failed'
   }
 }
 
 function retryCreateRoom() {
   createRoom()
+}
+
+async function prepareBackend() {
+  await api.ensureBackendReady((state, elapsedSeconds) => {
+    serverElapsedSeconds.value = elapsedSeconds
+    if (state === 'checking') serverStatus.value = 'checking'
+    if (state === 'waking_up') serverStatus.value = 'waking_up'
+    if (state === 'ready') serverStatus.value = 'ready'
+  })
 }
 
 async function joinRoom() {
@@ -78,11 +94,17 @@ async function joinRoom() {
   }
   roomCode.value = code
   view.value = 'room'
-  spacePhase.value = 'waiting'
-  connectToRoom()
+  spacePhase.value = 'creating'
+  prepareBackend()
+    .then(() => {
+      spacePhase.value = 'waiting'
+      connectToRoom()
+    })
+    .catch(() => { serverStatus.value = 'failed' })
 }
 
 function connectToRoom() {
+  serverStatus.value = 'connecting_ws'
   roomConnection?.disconnect()
   directTransfer?.close()
   roomConnection = api.connectRoomSocket(roomCode.value, {
@@ -91,6 +113,7 @@ function connectToRoom() {
         setupDirectTransfer(initiator)
         view.value = 'connected'
         spacePhase.value = 'connected'
+        serverStatus.value = 'connected'
       }
     },
     onUserJoined: (sessions) => {
@@ -98,6 +121,7 @@ function connectToRoom() {
         setupDirectTransfer(true)
         view.value = 'connected'
         spacePhase.value = 'connected'
+        serverStatus.value = 'connected'
       }
     },
     onSignal: (message) => {
@@ -138,6 +162,15 @@ function reset() {
   transferComplete.value = false
   isTransferring.value = false
   serverStatus.value = 'idle'
+  serverElapsedSeconds.value = 0
+}
+
+async function prepareOnStartup() {
+  try {
+    await prepareBackend()
+  } catch {
+    serverStatus.value = 'failed'
+  }
 }
 
 function toggleImmersiveMode() {
@@ -498,6 +531,7 @@ onBeforeUnmount(() => {
 })
 onMounted(() => {
   if (immersiveMode.value && view.value === 'start') nextTick(createSpaceScene)
+  prepareOnStartup()
 })
 </script>
 
@@ -524,8 +558,14 @@ onMounted(() => {
         <h1>Move files<br /><em>simply.</em></h1>
         <p class="intro">Create a temporary room and connect your devices in seconds.</p>
         <div class="welcome-actions">
-          <button class="button button-primary" type="button" :disabled="serverStatus === 'waking' || serverStatus === 'connecting'" @click="createRoom">{{ serverStatus === 'waking' || serverStatus === 'connecting' ? 'connecting...' : 'create a room' }} <span>↗</span></button>
+          <button class="button button-primary" type="button" :disabled="isPreparingBackend" @click="createRoom">{{ isPreparingBackend ? 'preparing server...' : 'create a room' }} <span>↗</span></button>
           <button class="button button-quiet" type="button" @click="joinRoom">join with a code</button>
+        </div>
+        <div v-if="serverStatus !== 'idle' && view === 'start'" class="server-preparation" aria-live="polite">
+          <strong>{{ preparationTitle }}</strong>
+          <span>{{ preparationMessage }}</span>
+          <small v-if="isPreparingBackend">Elapsed time: {{ serverElapsedSeconds }}s. You do not need to refresh.</small>
+          <button v-if="serverStatus === 'failed'" class="button button-quiet" type="button" @click="retryCreateRoom">try again</button>
         </div>
         <p class="microcopy"><span class="lock-icon">+</span> no account · temporary room</p>
       </div>
@@ -544,8 +584,9 @@ onMounted(() => {
         <strong>{{ roomCode || '...' }}</strong>
         <div class="code-meta">
           <span class="pulse-dot"></span>
-          {{ serverStatus === 'waking' ? 'waking the backend...' : serverStatus === 'connecting' ? 'retrying connection...' : serverStatus === 'failed' ? 'could not connect' : 'waiting for device' }}
+          {{ serverStatus === 'checking' ? 'checking server...' : serverStatus === 'waking_up' ? 'starting server...' : serverStatus === 'connecting_ws' ? 'connecting...' : serverStatus === 'failed' ? 'could not connect' : 'waiting for device' }}
         </div>
+        <small v-if="isPreparingBackend" class="server-elapsed">Elapsed time: {{ serverElapsedSeconds }}s</small>
       </div>
       <div class="lobby-actions">
         <button v-if="serverStatus === 'failed'" class="button button-primary" type="button" @click="retryCreateRoom">retry connection <span>↗</span></button>
@@ -606,6 +647,11 @@ h1 em { color: var(--coral); font-family: Georgia, serif; font-weight: 400; }
 .button-quiet { background: transparent; color: var(--muted); padding-left: 0; padding-right: 0; }
 .button-quiet:hover { color: var(--ink); }
 .microcopy { color: #706f68; font-size: 10px; letter-spacing: .05em; margin-top: 34px; text-transform: uppercase; }
+.server-preparation { border-left: 2px solid var(--lime); display: grid; gap: 6px; margin: 24px 0 0; max-width: 380px; padding-left: 14px; }
+.server-preparation strong { color: var(--ink); font-size: 13px; font-weight: 600; }
+.server-preparation span, .server-preparation small, .server-elapsed { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.server-preparation .button { justify-self: start; margin-top: 4px; }
+.server-elapsed { display: block; margin-top: 8px; }
 .lock-icon { border: 1px solid #6f7068; border-radius: 50%; display: inline-block; font-size: 9px; height: 15px; line-height: 13px; margin-right: 6px; text-align: center; width: 15px; }
 .hero-orbit { height: min(49vw, 600px); justify-self: end; max-height: 600px; max-width: 650px; position: relative; width: 100%; }
 .orbit { border: 1px solid rgba(214,232,106,.22); border-radius: 50%; left: 50%; position: absolute; top: 50%; transform: translate(-50%, -50%) rotate(-18deg); }
