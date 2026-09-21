@@ -19,6 +19,16 @@ export interface TransferFile {
   type: string
 }
 
+export const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024
+
+export function validateTransferFile(file: Pick<TransferFile, 'name' | 'size' | 'type'>): string | null {
+  if (!file.name.trim() || file.name.length > 255) return 'The file name must contain between 1 and 255 characters.'
+  if (!Number.isSafeInteger(file.size) || file.size < 0) return 'The file size is invalid.'
+  if (file.size > MAX_FILE_SIZE_BYTES) return 'Files must be 500 MB or smaller.'
+  if (file.type.length > 255) return 'The file type is invalid.'
+  return null
+}
+
 export interface CreateRoomResult {
   code: string
   url: string
@@ -210,6 +220,8 @@ export class DirectTransfer {
 
   async sendFile(file: File) {
     if (!this.channel || this.channel.readyState !== 'open') throw new Error('The devices are not connected yet')
+    const validationError = validateTransferFile(file)
+    if (validationError) throw new Error(validationError)
     const chunkSize = 64 * 1024
     this.channel.send(JSON.stringify({ kind: 'file', name: file.name, size: file.size, type: file.type }))
     for (let offset = 0; offset < file.size; offset += chunkSize) {
@@ -236,7 +248,13 @@ export class DirectTransfer {
     if (typeof data === 'string') {
       const message = JSON.parse(data) as { kind: string; name?: string; size?: number; type?: string }
       if (message.kind === 'file') {
-        this.incoming = { name: message.name!, size: message.size!, type: message.type || 'application/octet-stream' }
+        const incoming = {
+          name: message.name || '',
+          size: message.size ?? -1,
+          type: message.type || 'application/octet-stream',
+        }
+        if (validateTransferFile(incoming)) return
+        this.incoming = incoming
         this.received = []
         this.receivedBytes = 0
       } else if (message.kind === 'file-end' && this.incoming) {

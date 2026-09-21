@@ -10,12 +10,16 @@ The backend forwards only signaling messages (offer, answer and ICE
 candidates). File bytes travel through the browser-to-browser data channel.
 """
 
+import json
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from . import rooms as rooms_mod
 
 router = APIRouter()
 MAX_ROOM_CONNECTIONS = 2
+MAX_SIGNAL_MESSAGE_BYTES = 64 * 1024
+SIGNAL_TYPES = {"offer", "answer", "ice-candidate"}
 
 # code -> set de conexões websocket ativas ("quem está ouvindo esse room")
 room_connections: dict[str, set[WebSocket]] = {}
@@ -51,6 +55,16 @@ def _sessions_count(code: str) -> int:
     return len(room_connections.get(code, set()))
 
 
+def _is_valid_signal(message: object) -> bool:
+    if not isinstance(message, dict):
+        return False
+    message_type = message.get("type")
+    if message_type not in SIGNAL_TYPES:
+        return False
+    payload_key = "candidate" if message_type == "ice-candidate" else "description"
+    return isinstance(message.get(payload_key), dict)
+
+
 @router.websocket("/rooms/{code}/ws")
 async def handle_room_ws(ws: WebSocket, code: str) -> None:
     """Loop principal: fica ouvindo a conexão até alguém fechar. 🫀"""
@@ -79,9 +93,19 @@ async def handle_room_ws(ws: WebSocket, code: str) -> None:
     # Fica ouvindo sinalizacao ate o cliente fechar a aba / cair a internet
     try:
         while True:
-            message = await ws.receive_json()
-            if message.get("type") in {"offer", "answer", "ice-candidate"}:
-                await _broadcast(code, message, excluded=ws)
+            raw_message = await ws.receive_text()
+            if len(raw_message.encode("utf-8")) > MAX_SIGNAL_MESSAGE_BYTES:
+                await ws.close(code=1009, reason="Signaling message is too large")
+                return
+            try:
+                message = json.loads(raw_message)
+            except json.JSONDecodeError:
+                await ws.close(code=1003, reason="Signaling message must be valid JSON")
+                return
+            if not _is_valid_signal(message):
+                await ws.close(code=1008, reason="Invalid signaling message")
+                return
+            await _broadcast(code, message, excluded=ws)
     except WebSocketDisconnect:
         pass
     finally:

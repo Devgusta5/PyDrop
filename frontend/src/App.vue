@@ -179,7 +179,17 @@ function toggleImmersiveMode() {
 
 function onFileSelected(event: Event) {
   const input = event.target as HTMLInputElement
-  selectedFile.value = input.files?.[0] ?? null
+  const file = input.files?.[0] ?? null
+  if (file) {
+    const validationError = api.validateTransferFile(file)
+    if (validationError) {
+      input.value = ''
+      selectedFile.value = null
+      window.alert(validationError)
+      return
+    }
+  }
+  selectedFile.value = file
   transferComplete.value = false
 }
 
