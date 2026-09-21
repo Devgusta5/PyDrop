@@ -13,16 +13,10 @@
  * "http://127.0.0.1:8000" aqui, quebraria no deploy.
  */
 
-export interface RoomInfo {
-  code: string
-  files: FileEntry[]
-}
-
-export interface FileEntry {
-  id: string
+export interface TransferFile {
   name: string
   size: number
-  expires_in: number
+  type: string
 }
 
 export interface CreateRoomResult {
@@ -50,73 +44,31 @@ export async function createRoom(): Promise<CreateRoomResult> {
   return request<CreateRoomResult>('/rooms', { method: 'POST' })
 }
 
-/** Busca as infos de uma sala (e a lista de arquivos). (GET /rooms/{code}) */
-export async function getRoom(code: string): Promise<RoomInfo> {
-  return request<RoomInfo>(`/rooms/${encodeURIComponent(code)}`)
-}
-
-/** Envia um arquivo para a sala. (POST /rooms/{code}/files, multipart) */
-export async function uploadFile(
-  code: string,
-  file: File,
-  onProgress?: (percent: number) => void,
-): Promise<FileEntry> {
-  const form = new FormData()
-  form.append('file', file)
-
-  const response = await fetch(`/rooms/${encodeURIComponent(code)}/files`, {
-    method: 'POST',
-    body: form,
-  })
-
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`
-    try {
-      const body = await response.json()
-      if (body?.detail) detail = String(body.detail)
-    } catch {
-      // ignora
-    }
-    throw new Error(detail)
-  }
-
-  if (onProgress && ('body' in response) && response.body) {
-    // Progresso real de upload via fetch streaming (browsers modernos).
-    const reader = response.body.getReader()
-    const total = Number(response.headers.get('content-length')) || 0
-    let received = 0
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      received += value.length
-      if (total > 0) onProgress(Math.min(1, received / total))
-    }
-  }
-
-  return response.json() as Promise<FileEntry>
-}
-
-/** Monta a URL de download — o frontend só precisa abrir isso. */
-export function downloadUrl(fileId: string): string {
-  return `/files/${encodeURIComponent(fileId)}`
-}
-
 /**
- * Conecta no WebSocket de uma sala e repassa eventos de tempo real.
- * Devolve uma função de "desligar" — quem conecta decide quando parar.
+ * Connects to the signaling channel. The backend forwards these messages,
+ * but never receives file bytes.
  */
 export function connectRoomSocket(
   code: string,
   handlers: {
     onUserJoined?: (sessions: number) => void
-    onUserLeft?: (sessions: number) => void
-    onFileAdded?: (fileId: string) => void
+    onRoomState?: (sessions: number, initiator: boolean) => void
+    onSignal?: (message: SignalMessage) => void
     onDisconnect?: () => void
   },
-): () => void {
+): { send: (message: SignalMessage) => void; disconnect: () => void } {
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const socket = new WebSocket(`${protocol}://${window.location.host}/rooms/${encodeURIComponent(code)}/ws`)
+  const pending: SignalMessage[] = []
+
+  const send = (message: SignalMessage) => {
+    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message))
+    else pending.push(message)
+  }
+
+  socket.addEventListener('open', () => {
+    pending.splice(0).forEach((message) => socket.send(JSON.stringify(message)))
+  })
 
   socket.addEventListener('message', (event: MessageEvent) => {
     let message: Record<string, unknown>
@@ -129,11 +81,13 @@ export function connectRoomSocket(
       case 'user_joined':
         handlers.onUserJoined?.(message.sessions as number)
         break
-      case 'user_left':
-        handlers.onUserLeft?.(message.sessions as number)
+      case 'room_state':
+        handlers.onRoomState?.(message.sessions as number, message.initiator as boolean)
         break
-      case 'file_added':
-        handlers.onFileAdded?.(message.file_id as string)
+      case 'offer':
+      case 'answer':
+      case 'ice-candidate':
+        handlers.onSignal?.(message as unknown as SignalMessage)
         break
       default:
         break
@@ -142,5 +96,103 @@ export function connectRoomSocket(
 
   socket.addEventListener('close', () => handlers.onDisconnect?.())
 
-  return () => socket.close()
+  return { send, disconnect: () => socket.close() }
+}
+
+export type SignalMessage =
+  | { type: 'offer'; description: RTCSessionDescriptionInit }
+  | { type: 'answer'; description: RTCSessionDescriptionInit }
+  | { type: 'ice-candidate'; candidate: RTCIceCandidateInit }
+
+export class DirectTransfer {
+  private readonly peer: RTCPeerConnection
+  private channel: RTCDataChannel | null = null
+  private pendingCandidates: RTCIceCandidateInit[] = []
+  private received: ArrayBuffer[] = []
+  private receivedBytes = 0
+  private incoming: TransferFile | null = null
+
+  constructor(
+    private readonly sendSignal: (message: SignalMessage) => void,
+    private readonly onReady: () => void,
+    private readonly onIncomingFile: (file: TransferFile, blob: Blob) => void,
+    private readonly onProgress: (progress: number) => void,
+  ) {
+    this.peer = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    })
+    this.peer.onicecandidate = ({ candidate }) => {
+      if (candidate) this.sendSignal({ type: 'ice-candidate', candidate: candidate.toJSON() })
+    }
+    this.peer.ondatachannel = ({ channel }) => this.attachChannel(channel)
+  }
+
+  async start(initiator: boolean) {
+    if (!initiator) return
+    this.attachChannel(this.peer.createDataChannel('files'))
+    await this.peer.setLocalDescription(await this.peer.createOffer())
+    this.sendSignal({ type: 'offer', description: this.peer.localDescription! })
+  }
+
+  async handleSignal(message: SignalMessage) {
+    if (message.type === 'offer') {
+      await this.peer.setRemoteDescription(message.description)
+      await this.flushCandidates()
+      await this.peer.setLocalDescription(await this.peer.createAnswer())
+      this.sendSignal({ type: 'answer', description: this.peer.localDescription! })
+    } else if (message.type === 'answer') {
+      await this.peer.setRemoteDescription(message.description)
+      await this.flushCandidates()
+    } else {
+      if (this.peer.remoteDescription) await this.peer.addIceCandidate(message.candidate)
+      else this.pendingCandidates.push(message.candidate)
+    }
+  }
+
+  async sendFile(file: File) {
+    if (!this.channel || this.channel.readyState !== 'open') throw new Error('The devices are not connected yet')
+    const chunkSize = 64 * 1024
+    this.channel.send(JSON.stringify({ kind: 'file', name: file.name, size: file.size, type: file.type }))
+    for (let offset = 0; offset < file.size; offset += chunkSize) {
+      while (this.channel.bufferedAmount > chunkSize * 8) await new Promise((resolve) => setTimeout(resolve, 20))
+      this.channel.send(await file.slice(offset, offset + chunkSize).arrayBuffer())
+      this.onProgress(Math.min(1, (offset + chunkSize) / file.size))
+    }
+    this.channel.send(JSON.stringify({ kind: 'file-end' }))
+  }
+
+  close() {
+    this.channel?.close()
+    this.peer.close()
+  }
+
+  private attachChannel(channel: RTCDataChannel) {
+    this.channel = channel
+    channel.binaryType = 'arraybuffer'
+    channel.onopen = () => this.onReady()
+    channel.onmessage = (event) => this.handleData(event.data)
+  }
+
+  private handleData(data: string | ArrayBuffer) {
+    if (typeof data === 'string') {
+      const message = JSON.parse(data) as { kind: string; name?: string; size?: number; type?: string }
+      if (message.kind === 'file') {
+        this.incoming = { name: message.name!, size: message.size!, type: message.type || 'application/octet-stream' }
+        this.received = []
+        this.receivedBytes = 0
+      } else if (message.kind === 'file-end' && this.incoming) {
+        this.onIncomingFile(this.incoming, new Blob(this.received, { type: this.incoming.type }))
+        this.incoming = null
+      }
+      return
+    }
+    if (!this.incoming) return
+    this.received.push(data)
+    this.receivedBytes += data.byteLength
+    this.onProgress(this.receivedBytes / this.incoming.size)
+  }
+
+  private async flushCandidates() {
+    for (const candidate of this.pendingCandidates.splice(0)) await this.peer.addIceCandidate(candidate)
+  }
 }

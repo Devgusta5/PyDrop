@@ -1,4 +1,4 @@
-"""WebSocket: a conexão em tempo real entre os dois navegadores. 📡
+"""WebSocket used as the WebRTC signaling channel.
 
 HTTP normal: você pergunta → o servidor responde → a ligação ACABA. 🤝
 WebSocket: os dois continuam conectados e o servidor EMPURRA mudanças. 📲
@@ -6,12 +6,9 @@ WebSocket: os dois continuam conectados e o servidor EMPURRA mudanças. 📲
 Este arquivo decide 1 coisa só: o que acontece quando alguém
 se conecta num room via WebSocket (tempo real).
 
-2 jobs:
-1. Ao entrar, avisa quem já tava: "chegou mais um" → atualiza contador
-2. Quando um arquivo chega (upload de outra pessoa), avisa o browser
-   do outro lado: "tem arquivo novo" → ele mostra instantaneamente
+The backend forwards only signaling messages (offer, answer and ICE
+candidates). File bytes travel through the browser-to-browser data channel.
 """
-import asyncio
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -33,11 +30,13 @@ def _unsubscribe(code: str, ws: WebSocket) -> None:
     room_connections.get(code, set()).discard(ws)
 
 
-async def _broadcast(code: str, message: dict) -> None:
+async def _broadcast(code: str, message: dict, excluded: WebSocket | None = None) -> None:
     """Envia uma mensagem pra TODOS conectados. Conexão morta? remove da lista."""
     dead = []
     connections = room_connections.get(code, set()).copy()
     for ws in connections:
+        if ws is excluded:
+            continue
         try:
             await ws.send_json(message)
         except Exception:
@@ -59,9 +58,12 @@ async def handle_room_ws(ws: WebSocket, code: str) -> None:
 
     await ws.accept()
     _subscribe(code, ws)
+    sessions = _sessions_count(code)
 
-    # Avisa quem já estava: "chegou mais um" → seu contador atualiza
-    await _broadcast(code, {"type": "user_joined", "sessions": _sessions_count(code)})
+    # O primeiro peer cria a oferta; later peers answer it.
+    await ws.send_json({"type": "room_state", "sessions": sessions, "initiator": sessions == 1})
+    if sessions > 1:
+        await _broadcast(code, {"type": "user_joined", "sessions": sessions}, excluded=ws)
 
     # Manda pro recém-chegado: os arquivos que JÁ ESTAVAM no room
     room = rooms_mod.get_room(code)
@@ -69,10 +71,12 @@ async def handle_room_ws(ws: WebSocket, code: str) -> None:
         {"type": "initial_files", "file_ids": list(room["files"])}
     )
 
-    # Fica ouvindo a conexão até o cliente fechar a aba / cair a internet
+    # Fica ouvindo sinalizacao ate o cliente fechar a aba / cair a internet
     try:
         while True:
-            await ws.receive_text()  # só pra detectar que continua vivo (ping)
+            message = await ws.receive_json()
+            if message.get("type") in {"offer", "answer", "ice-candidate"}:
+                await _broadcast(code, message, excluded=ws)
     except WebSocketDisconnect:
         pass
     finally:
@@ -80,6 +84,3 @@ async def handle_room_ws(ws: WebSocket, code: str) -> None:
         await _broadcast(code, {"type": "user_left", "sessions": _sessions_count(code)})
 
 
-async def notify_file_added(code: str, file_id: str) -> None:
-    """Diz pra todo mundo do room: 'chegou um arquivo novo, aqui está o ID'."""
-    await _broadcast(code, {"type": "file_added", "file_id": file_id})

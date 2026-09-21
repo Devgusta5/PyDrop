@@ -12,11 +12,12 @@ const isTransferring = ref(false)
 const transferComplete = ref(false)
 const immersiveMode = ref(false)
 const roomCode = ref('')
-const roomFiles = ref<api.FileEntry[]>([])
+const roomFiles = ref<api.TransferFile[]>([])
 const threeMount = ref<HTMLElement | null>(null)
 const spaceMount = ref<HTMLElement | null>(null)
 const spacePhase = ref<'idle' | 'creating' | 'waiting' | 'connected'>('idle')
-let roomSocketDisconnect: (() => void) | null = null
+let roomConnection: ReturnType<typeof api.connectRoomSocket> | null = null
+let directTransfer: api.DirectTransfer | null = null
 
 let renderer: THREE.WebGLRenderer | null = null
 let scene: THREE.Scene | null = null
@@ -48,25 +49,76 @@ async function createRoom() {
     const result = await api.createRoom()
     roomCode.value = result.code
     spacePhase.value = 'waiting'
+    connectToRoom()
   } catch (error) {
     view.value = 'start'
     window.alert(error instanceof Error ? error.message : String(error))
   }
 }
 
-async function simulateConnection() {
-  if (!roomCode.value) return
-  spacePhase.value = 'connected'
-  try {
-    const room = await api.getRoom(roomCode.value)
-    roomFiles.value = room.files
-    view.value = 'connected'
-  } catch (error) {
-    window.alert(error instanceof Error ? error.message : String(error))
+async function joinRoom() {
+  const code = window.prompt('Enter the room code')?.trim().toUpperCase()
+  if (!code || !/^[A-Z0-9]{5}$/.test(code)) {
+    if (code) window.alert('Room codes have five letters or numbers.')
+    return
   }
+  roomCode.value = code
+  view.value = 'room'
+  spacePhase.value = 'waiting'
+  connectToRoom()
+}
+
+function connectToRoom() {
+  roomConnection?.disconnect()
+  directTransfer?.close()
+  roomConnection = api.connectRoomSocket(roomCode.value, {
+    onRoomState: (sessions, initiator) => {
+      if (sessions > 1) {
+        setupDirectTransfer(initiator)
+        view.value = 'connected'
+        spacePhase.value = 'connected'
+      }
+    },
+    onUserJoined: (sessions) => {
+      if (sessions > 1) {
+        setupDirectTransfer(true)
+        view.value = 'connected'
+        spacePhase.value = 'connected'
+      }
+    },
+    onSignal: (message) => {
+      directTransfer?.handleSignal(message).catch((error) => window.alert(String(error)))
+    },
+    onDisconnect: () => {
+      if (view.value === 'connected') window.alert('The signaling connection was closed.')
+    },
+  })
+}
+
+function setupDirectTransfer(initiator: boolean) {
+  if (directTransfer || !roomConnection) return
+  directTransfer = new api.DirectTransfer(
+    (message) => roomConnection?.send(message),
+    () => { spacePhase.value = 'connected' },
+    (file, blob) => {
+      roomFiles.value = [...roomFiles.value, file]
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = file.name
+      link.click()
+      URL.revokeObjectURL(url)
+    },
+    (progress) => { transferProgress = progress },
+  )
+  directTransfer.start(initiator).catch((error) => window.alert(String(error)))
 }
 
 function reset() {
+  roomConnection?.disconnect()
+  directTransfer?.close()
+  roomConnection = null
+  directTransfer = null
   view.value = 'start'
   selectedFile.value = null
   transferComplete.value = false
@@ -84,15 +136,12 @@ function onFileSelected(event: Event) {
 }
 
 async function startTransfer() {
-  if (!selectedFile.value || !roomCode.value) return
+  if (!selectedFile.value || !directTransfer) return
   isTransferring.value = true
   transferComplete.value = false
   transferProgress = 0
   try {
-    const entry = await api.uploadFile(roomCode.value, selectedFile.value, (percent) => {
-      transferProgress = percent
-    })
-    roomFiles.value = [...roomFiles.value, entry]
+    await directTransfer.sendFile(selectedFile.value)
     transferComplete.value = true
   } catch (error) {
     window.alert(error instanceof Error ? error.message : String(error))
@@ -428,6 +477,10 @@ watch(isTransferring, (transferring) => {
 
 onBeforeUnmount(disposeThreeScene)
 onBeforeUnmount(disposeSpaceScene)
+onBeforeUnmount(() => {
+  roomConnection?.disconnect()
+  directTransfer?.close()
+})
 onMounted(() => {
   if (immersiveMode.value && view.value === 'start') nextTick(createSpaceScene)
 })
@@ -457,7 +510,7 @@ onMounted(() => {
         <p class="intro">Create a temporary room and connect your devices in seconds.</p>
         <div class="welcome-actions">
           <button class="button button-primary" type="button" @click="createRoom">create a room <span>↗</span></button>
-          <button class="button button-quiet" type="button" @click="createRoom">join with a code</button>
+          <button class="button button-quiet" type="button" @click="joinRoom">join with a code</button>
         </div>
         <p class="microcopy"><span class="lock-icon">+</span> no account · temporary room</p>
       </div>
@@ -477,7 +530,7 @@ onMounted(() => {
         <div class="code-meta"><span class="pulse-dot"></span> waiting for device</div>
       </div>
       <div class="lobby-actions">
-        <button class="button button-primary" type="button" @click="simulateConnection">simulate device connection <span>→</span></button>
+        <button class="button button-primary" type="button" disabled>waiting for another device <span>...</span></button>
         <button class="button button-quiet" type="button" @click="reset">cancel</button>
       </div>
       <div class="qr-placeholder"><span class="qr-grid"></span><div><strong>or scan to join</strong><small>QR code coming soon</small></div></div>
