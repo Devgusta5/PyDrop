@@ -19,6 +19,7 @@ const spacePhase = ref<'idle' | 'creating' | 'waiting' | 'connected'>('idle')
 const serverStatus = ref<'idle' | 'checking' | 'waking_up' | 'ready' | 'connecting_ws' | 'connected' | 'failed'>('idle')
 const serverElapsedSeconds = ref(0)
 const roomFull = ref(false)
+const completedTransfers = ref(0)
 let roomConnection: ReturnType<typeof api.connectRoomSocket> | null = null
 let directTransfer: api.DirectTransfer | null = null
 let reconnectTimer = 0
@@ -154,6 +155,9 @@ function connectToRoom() {
         window.clearTimeout(reconnectTimer)
       }
     },
+    onTransferCount: (count) => {
+      completedTransfers.value = count
+    },
   })
 }
 
@@ -199,6 +203,13 @@ async function prepareOnStartup() {
     await prepareBackend()
   } catch {
     serverStatus.value = 'failed'
+    return
+  }
+  try {
+    const stats = await api.getTransferStats()
+    completedTransfers.value = stats.completed_transfers
+  } catch {
+    // The transfer badge is optional and must not block the application.
   }
 }
 
@@ -583,6 +594,7 @@ onMounted(() => {
       </button>
       <div class="topbar-actions">
         <div class="topbar-status"><span class="status-dot"></span> {{ immersiveMode ? 'immersive mode' : 'simple mode' }}</div>
+        <div class="transfer-badge" aria-live="polite"><span class="badge-dot"></span>{{ completedTransfers }} transfers</div>
         <button class="mode-toggle" :class="{ active: immersiveMode }" type="button" @click="toggleImmersiveMode">
           <span class="mode-toggle-icon">{{ immersiveMode ? '◈' : '✦' }}</span>
           {{ immersiveMode ? 'simple view' : 'enable 3D' }}
@@ -673,6 +685,8 @@ onMounted(() => {
 .brand-mark span { background: var(--lime); border-radius: 6px; display: block; transform: skew(-17deg); width: 8px; }
 .brand-mark span:last-child { background: var(--coral); margin-top: 5px; }
 .topbar-status { align-items: center; color: var(--muted); display: flex; font-size: 11px; gap: 8px; letter-spacing: .08em; text-transform: uppercase; }
+.transfer-badge { align-items: center; border: 1px solid var(--line); color: var(--muted); display: flex; font-size: 10px; gap: 7px; letter-spacing: .08em; padding: 8px 10px; text-transform: uppercase; }
+.badge-dot { background: var(--coral); border-radius: 50%; height: 6px; width: 6px; }
 .status-dot, .pulse-dot { background: var(--lime); border-radius: 50%; display: inline-block; height: 6px; width: 6px; }
 .welcome-view { align-items: center; display: grid; grid-template-columns: minmax(340px, .85fr) 1.15fr; min-height: calc(100vh - 105px); }
 .eyebrow { color: var(--lime); font-size: 11px; letter-spacing: .18em; margin-bottom: 25px; text-transform: uppercase; }

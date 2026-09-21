@@ -34,6 +34,10 @@ export interface CreateRoomResult {
   url: string
 }
 
+export interface TransferStats {
+  completed_transfers: number
+}
+
 const apiBaseUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
 const iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }]
 const turnUrl = import.meta.env.VITE_TURN_URL?.trim()
@@ -118,6 +122,10 @@ export async function createRoom(): Promise<CreateRoomResult> {
   return request<CreateRoomResult>('/rooms', { method: 'POST' })
 }
 
+export async function getTransferStats(): Promise<TransferStats> {
+  return request<TransferStats>('/stats')
+}
+
 /**
  * Connects to the signaling channel. The backend forwards these messages,
  * but never receives file bytes.
@@ -130,15 +138,16 @@ export function connectRoomSocket(
     onSignal?: (message: SignalMessage) => void
     onDisconnect?: () => void
     onClose?: (code: number, reason: string) => void
+    onTransferCount?: (count: number) => void
   },
-): { send: (message: SignalMessage) => void; disconnect: () => void } {
+): { send: (message: SignalingMessage) => void; disconnect: () => void } {
   const signalingUrl = apiBaseUrl
     ? apiBaseUrl.replace(/^http/, 'ws')
     : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
   const socket = new WebSocket(`${signalingUrl}/rooms/${encodeURIComponent(code)}/ws`)
-  const pending: SignalMessage[] = []
+  const pending: SignalingMessage[] = []
 
-  const send = (message: SignalMessage) => {
+  const send = (message: SignalingMessage) => {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message))
     else pending.push(message)
   }
@@ -166,6 +175,9 @@ export function connectRoomSocket(
       case 'ice-candidate':
         handlers.onSignal?.(message as unknown as SignalMessage)
         break
+      case 'transfer-count':
+        if (typeof message.count === 'number') handlers.onTransferCount?.(message.count)
+        break
       default:
         break
     }
@@ -184,6 +196,8 @@ export type SignalMessage =
   | { type: 'answer'; description: RTCSessionDescriptionInit }
   | { type: 'ice-candidate'; candidate: RTCIceCandidateInit }
 
+export type SignalingMessage = SignalMessage | { type: 'transfer-completed'; transfer_id: string }
+
 export class DirectTransfer {
   private readonly peer: RTCPeerConnection
   private channel: RTCDataChannel | null = null
@@ -191,9 +205,10 @@ export class DirectTransfer {
   private received: ArrayBuffer[] = []
   private receivedBytes = 0
   private incoming: TransferFile | null = null
+  private incomingTransferId = ''
 
   constructor(
-    private readonly sendSignal: (message: SignalMessage) => void,
+    private readonly sendSignal: (message: SignalingMessage) => void,
     private readonly onReady: () => void,
     private readonly onIncomingFile: (file: TransferFile, blob: Blob) => void,
     private readonly onProgress: (progress: number) => void,
@@ -234,8 +249,9 @@ export class DirectTransfer {
     if (!this.channel || this.channel.readyState !== 'open') throw new Error('The devices are not connected yet')
     const validationError = validateTransferFile(file)
     if (validationError) throw new Error(validationError)
+    const transferId = crypto.randomUUID()
     const chunkSize = 64 * 1024
-    this.channel.send(JSON.stringify({ kind: 'file', name: file.name, size: file.size, type: file.type }))
+    this.channel.send(JSON.stringify({ kind: 'file', transferId, name: file.name, size: file.size, type: file.type }))
     for (let offset = 0; offset < file.size; offset += chunkSize) {
       while (this.channel.bufferedAmount > chunkSize * 8) await new Promise((resolve) => setTimeout(resolve, 20))
       this.channel.send(await file.slice(offset, offset + chunkSize).arrayBuffer())
@@ -258,7 +274,7 @@ export class DirectTransfer {
 
   private handleData(data: string | ArrayBuffer) {
     if (typeof data === 'string') {
-      let message: { kind: string; name?: string; size?: number; type?: string }
+      let message: { kind: string; transferId?: string; name?: string; size?: number; type?: string }
       try {
         message = JSON.parse(data)
       } catch {
@@ -277,6 +293,7 @@ export class DirectTransfer {
           return
         }
         this.incoming = incoming
+        this.incomingTransferId = message.transferId || ''
         this.received = []
         this.receivedBytes = 0
       } else if (message.kind === 'file-end' && this.incoming) {
@@ -285,6 +302,7 @@ export class DirectTransfer {
           return
         }
         this.onIncomingFile(this.incoming, new Blob(this.received, { type: this.incoming.type }))
+        this.sendSignal({ type: 'transfer-completed', transfer_id: this.incomingTransferId })
         this.resetIncoming()
       }
       return
@@ -312,5 +330,6 @@ export class DirectTransfer {
     this.received = []
     this.receivedBytes = 0
     this.incoming = null
+    this.incomingTransferId = ''
   }
 }
