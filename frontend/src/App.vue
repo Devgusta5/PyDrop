@@ -10,6 +10,7 @@ const direction = ref<'send' | 'receive'>('send')
 const selectedFile = ref<File | null>(null)
 const isTransferring = ref(false)
 const transferComplete = ref(false)
+const immersiveMode = ref(false)
 const roomCode = ref('')
 const roomFiles = ref<api.FileEntry[]>([])
 const threeMount = ref<HTMLElement | null>(null)
@@ -70,6 +71,10 @@ function reset() {
   selectedFile.value = null
   transferComplete.value = false
   isTransferring.value = false
+}
+
+function toggleImmersiveMode() {
+  immersiveMode.value = !immersiveMode.value
 }
 
 function onFileSelected(event: Event) {
@@ -387,17 +392,33 @@ function disposeSpaceScene() {
 }
 
 watch(view, async (currentView) => {
-  if (currentView === 'start' || currentView === 'room') {
+  if (immersiveMode.value && (currentView === 'start' || currentView === 'room')) {
     disposeSpaceScene()
     await nextTick()
     createSpaceScene()
   } else if (currentView === 'connected') {
-    await nextTick()
-    cameraEntry = 0
-    createThreeScene()
+    disposeSpaceScene()
+    if (immersiveMode.value) {
+      await nextTick()
+      cameraEntry = 0
+      createThreeScene()
+    }
   } else {
     disposeThreeScene()
     disposeSpaceScene()
+  }
+})
+
+watch(immersiveMode, async (enabled) => {
+  disposeThreeScene()
+  disposeSpaceScene()
+  if (!enabled) return
+  await nextTick()
+  if (view.value === 'connected') {
+    cameraEntry = 0
+    createThreeScene()
+  } else {
+    createSpaceScene()
   }
 })
 
@@ -408,7 +429,7 @@ watch(isTransferring, (transferring) => {
 onBeforeUnmount(disposeThreeScene)
 onBeforeUnmount(disposeSpaceScene)
 onMounted(() => {
-  if (view.value === 'start') nextTick(createSpaceScene)
+  if (immersiveMode.value && view.value === 'start') nextTick(createSpaceScene)
 })
 </script>
 
@@ -419,60 +440,71 @@ onMounted(() => {
         <span class="brand-mark"><span></span><span></span></span>
         <span>pydrop</span>
       </button>
-      <div class="topbar-status"><span class="status-dot"></span> protótipo local</div>
+      <div class="topbar-actions">
+        <div class="topbar-status"><span class="status-dot"></span> {{ immersiveMode ? 'immersive mode' : 'simple mode' }}</div>
+        <button class="mode-toggle" :class="{ active: immersiveMode }" type="button" @click="toggleImmersiveMode">
+          <span class="mode-toggle-icon">{{ immersiveMode ? '◈' : '✦' }}</span>
+          {{ immersiveMode ? 'simple view' : 'enable 3D' }}
+        </button>
+      </div>
     </header>
 
-    <section v-if="view === 'start'" class="welcome-view page-enter">
-      <div ref="spaceMount" class="space-world" aria-label="Espaço 3D interativo do PyDrop"></div>
+    <section v-if="view === 'start'" class="welcome-view page-enter" :class="{ 'simple-mode': !immersiveMode }">
+      <div v-if="immersiveMode" ref="spaceMount" class="space-world" aria-label="Espaço 3D interativo do PyDrop"></div>
       <div class="welcome-copy">
-        <p class="eyebrow">um espaço entre telas</p>
-        <h1>Os arquivos<br /><em>sabem</em> o caminho.</h1>
-        <p class="intro">Interaja com o núcleo para abrir uma sala.</p>
+        <p class="eyebrow">private file transfer</p>
+        <h1>Move files<br /><em>simply.</em></h1>
+        <p class="intro">Create a temporary room and connect your devices in seconds.</p>
         <div class="welcome-actions">
-          <button class="button button-primary" type="button" @click="createRoom">abrir uma sala <span>↗</span></button>
-          <button class="button button-quiet" type="button" @click="createRoom">já tenho um código</button>
+          <button class="button button-primary" type="button" @click="createRoom">create a room <span>↗</span></button>
+          <button class="button button-quiet" type="button" @click="createRoom">join with a code</button>
         </div>
-        <p class="microcopy"><span class="lock-icon">+</span> sem conta · conexão temporária</p>
+        <p class="microcopy"><span class="lock-icon">+</span> no account · temporary room</p>
       </div>
-      <div class="home-caption" aria-hidden="true"><span>01</span><i></i><span>uma sala temporária para seus dispositivos</span></div>
+      <div v-if="immersiveMode" class="home-caption" aria-hidden="true"><span>01</span><i></i><span>a temporary room for your devices</span></div>
     </section>
 
-    <section v-else-if="view === 'room'" class="room-lobby page-enter">
-      <div ref="spaceMount" class="space-world" aria-label="Espaço 3D aguardando dispositivo"></div>
+    <section v-else-if="view === 'room'" class="room-lobby page-enter" :class="{ 'simple-mode': !immersiveMode }">
+      <div v-if="immersiveMode" ref="spaceMount" class="space-world" aria-label="Espaço 3D aguardando dispositivo"></div>
       <div class="lobby-heading">
-        <p class="eyebrow">portal estabilizado</p>
-        <h1>Convide outro<br /><em>dispositivo.</em></h1>
-        <p>O espaço está escutando uma nova presença.</p>
+        <p class="eyebrow">room ready</p>
+        <h1>Connect another<br /><em>device.</em></h1>
+        <p>Open PyDrop on another device and enter this code.</p>
       </div>
       <div class="code-panel">
         <span class="code-label">room / código</span>
         <strong>{{ roomCode }}</strong>
-        <div class="code-meta"><span class="pulse-dot"></span> waiting for device...</div>
+        <div class="code-meta"><span class="pulse-dot"></span> waiting for device</div>
       </div>
       <div class="lobby-actions">
-        <button class="button button-primary" type="button" @click="simulateConnection">Simular entrada do celular <span>→</span></button>
-        <button class="button button-quiet" type="button" @click="reset">Cancelar</button>
+        <button class="button button-primary" type="button" @click="simulateConnection">simulate device connection <span>→</span></button>
+        <button class="button button-quiet" type="button" @click="reset">cancel</button>
       </div>
-      <div class="qr-placeholder"><span class="qr-grid"></span><div><strong>ou escaneie para entrar</strong><small>QR Code disponível em breve</small></div></div>
+      <div class="qr-placeholder"><span class="qr-grid"></span><div><strong>or scan to join</strong><small>QR code coming soon</small></div></div>
     </section>
 
-    <section v-else class="connected-view page-enter">
+    <section v-else class="connected-view page-enter" :class="{ 'simple-mode': !immersiveMode }">
       <div class="scene-header">
         <div><p class="eyebrow">sala nova-47</p><h1>Seus dispositivos<br /><em>estão juntos.</em></h1></div>
         <button class="exit-button" type="button" @click="reset">sair da sala <span>×</span></button>
       </div>
 
       <div class="room-scene" :class="{ transferring: isTransferring, complete: transferComplete }">
-        <div ref="threeMount" class="three-room" aria-label="Sala 3D do PyDrop"></div>
-        <div class="scene-device-label scene-computer-label">meu computador <small>Windows · Chrome</small></div>
-        <div class="scene-device-label scene-phone-label">meu celular <small>Android · Chrome</small></div>
-        <div class="scene-portal-label">{{ transferComplete ? 'enviado' : 'portal' }}</div>
+        <div v-if="immersiveMode" ref="threeMount" class="three-room" aria-label="Sala 3D do PyDrop"></div>
+        <div v-if="immersiveMode" class="scene-device-label scene-computer-label">my computer <small>Windows · Chrome</small></div>
+        <div v-if="immersiveMode" class="scene-device-label scene-phone-label">my phone <small>Android · Chrome</small></div>
+        <div v-if="immersiveMode" class="scene-portal-label">{{ transferComplete ? 'sent' : 'portal' }}</div>
+        <div v-else class="simple-room-content">
+          <div class="simple-device"><span class="simple-device-icon">▣</span><strong>My computer</strong><small>Windows · Chrome</small></div>
+          <div class="simple-connection"><span></span><strong>{{ transferComplete ? 'Transfer complete' : 'Connected' }}</strong><span></span></div>
+          <div class="simple-device"><span class="simple-device-icon">▯</span><strong>My phone</strong><small>Android · Chrome</small></div>
+        </div>
       </div>
 
       <div class="transfer-dock">
-        <div class="dock-top"><span class="dock-kicker">o que você quer fazer?</span><div class="direction-switch"><button :class="{ active: direction === 'send' }" type="button" @click="direction = 'send'">enviar</button><button :class="{ active: direction === 'receive' }" type="button" @click="direction = 'receive'">receber</button></div></div>
-        <label class="drop-zone" :class="{ 'has-file': selectedFile }"><input type="file" @change="onFileSelected" /><span class="upload-mark">↑</span><span><strong>{{ fileLabel }}</strong><small>{{ selectedFile ? 'arquivo selecionado' : 'clique ou arraste para o portal' }}</small></span></label>
-        <button class="transfer-button" :disabled="!selectedFile || isTransferring" type="button" @click="startTransfer">{{ isTransferring ? 'atravessando o portal...' : transferComplete ? 'enviar outro arquivo' : direction === 'send' ? 'enviar arquivo' : 'receber arquivo' }} <span>→</span></button>
+        <div class="dock-top"><span class="dock-kicker">choose an action</span><div class="direction-switch"><button :class="{ active: direction === 'send' }" type="button" @click="direction = 'send'">send</button><button :class="{ active: direction === 'receive' }" type="button" @click="direction = 'receive'">receive</button></div></div>
+        <label class="drop-zone" :class="{ 'has-file': selectedFile }"><input type="file" @change="onFileSelected" /><span class="upload-mark">↑</span><span><strong>{{ fileLabel }}</strong><small>{{ selectedFile ? 'file selected' : 'choose a file to transfer' }}</small></span></label>
+        <button class="transfer-button" :disabled="!selectedFile || isTransferring" type="button" @click="startTransfer">{{ isTransferring ? 'transferring...' : transferComplete ? 'send another file' : direction === 'send' ? 'send file' : 'receive file' }} <span>→</span></button>
       </div>
     </section>
   </main>
@@ -571,4 +603,58 @@ h1 em { color: var(--coral); font-family: Georgia, serif; font-weight: 400; }
 .welcome-view .button-primary { background: rgba(156,231,212,.14); border: 1px solid rgba(156,231,212,.8); box-shadow: 0 0 25px rgba(156,231,212,.12), inset 0 0 20px rgba(156,231,212,.06); color: #c5ffef; text-transform: uppercase; }.welcome-view .button-primary:hover { background: rgba(156,231,212,.25); box-shadow: 0 0 40px rgba(156,231,212,.25); }.welcome-view .button-quiet { color: #8da9a6; text-transform: uppercase; }
 .room-lobby { height: calc(100svh - 82px); min-height: 540px; overflow: hidden; position: relative; }.room-lobby .space-world { position: absolute; }.room-lobby .lobby-heading, .room-lobby .code-panel, .room-lobby .lobby-actions, .room-lobby .qr-placeholder { position: relative; z-index: 2; }.room-lobby .lobby-heading { align-self: flex-start; margin-left: 5vw; text-align: left; }.room-lobby .lobby-heading h1 { text-shadow: 0 0 30px rgba(156,231,212,.2); }.room-lobby > p { color: #9bb2ad; }.room-lobby .code-panel { align-self: flex-end; background: rgba(8,14,18,.5); border: 1px solid rgba(156,231,212,.42); box-shadow: 0 0 35px rgba(156,231,212,.09), inset 0 0 24px rgba(156,231,212,.04); margin: -90px 11vw 0 0; padding: 20px 35px 17px; text-align: left; }.room-lobby .code-panel strong { color: #c5ffef; font-family: 'Courier New', monospace; font-size: clamp(2.4rem, 5vw, 4rem); text-shadow: 0 0 18px rgba(156,231,212,.35); }.room-lobby .code-meta { justify-content: flex-start; color: #9ce7d4; }.room-lobby .lobby-actions { align-self: flex-end; margin-right: 11vw; margin-top: 22px; }.room-lobby .qr-placeholder { align-self: flex-end; margin: 30px 11vw 0 0; }.room-lobby .button-primary { background: rgba(214,232,106,.14); border: 1px solid rgba(214,232,106,.7); box-shadow: 0 0 24px rgba(214,232,106,.1); color: var(--lime); text-transform: uppercase; }
 @media (max-width: 720px) { .welcome-view .welcome-copy { bottom: 6vh; left: 22px; }.welcome-view .welcome-copy h1 { font-size: clamp(3.1rem, 14vw, 5rem); }.room-lobby { height: calc(100svh - 65px); min-height: 600px; }.room-lobby .lobby-heading { margin: 0 22px; }.room-lobby .lobby-heading h1 { font-size: 3rem; }.room-lobby .code-panel { align-self: flex-start; margin: 28px 22px 0; }.room-lobby .lobby-actions, .room-lobby .qr-placeholder { align-self: flex-start; margin-left: 22px; margin-right: 22px; }.room-lobby .qr-placeholder { margin-top: 24px; } }
+
+.topbar-actions { align-items: center; display: flex; gap: 22px; }
+.mode-toggle { align-items: center; background: rgba(244, 241, 234, .06); border: 1px solid var(--line); color: var(--muted); display: flex; font-size: 10px; gap: 8px; letter-spacing: .08em; padding: 9px 12px; text-transform: uppercase; transition: border-color .2s, color .2s, background .2s; }
+.mode-toggle:hover, .mode-toggle.active { background: rgba(214, 232, 106, .1); border-color: rgba(214, 232, 106, .6); color: var(--lime); }
+.mode-toggle-icon { color: var(--coral); font-size: 14px; }
+.mode-toggle.active .mode-toggle-icon { color: var(--lime); }
+
+.simple-mode { background: #f7f8fa; color: #18202b; }
+.app-shell:has(.simple-mode) { background: #f7f8fa; color: #18202b; }
+.app-shell:has(.simple-mode) .topbar { color: #18202b; }
+.app-shell:has(.simple-mode) .brand { color: #18202b; }
+.app-shell:has(.simple-mode) .topbar-status { color: #788392; }
+.app-shell:has(.simple-mode) .mode-toggle { background: #fff; border-color: #dce2e8; color: #43505f; }
+.app-shell:has(.simple-mode) .mode-toggle:hover { background: #eef5ff; border-color: #9db9d9; color: #1e5a9a; }
+.app-shell:has(.simple-mode) .mode-toggle-icon { color: #1e5a9a; }
+.welcome-view.simple-mode { display: flex; align-items: center; justify-content: center; min-height: calc(100vh - 105px); height: auto; overflow: visible; }
+.simple-mode .welcome-copy { bottom: auto; left: auto; max-width: 520px; position: relative; text-align: center; z-index: 1; }
+.simple-mode .welcome-copy .eyebrow { color: #5377a0; margin-bottom: 20px; }
+.simple-mode .welcome-copy h1 { color: #18202b; font-size: clamp(3rem, 6vw, 5.6rem); text-shadow: none; }
+.simple-mode .welcome-copy h1 em { color: #1e5a9a; }
+.simple-mode .welcome-copy .intro { color: #667383; margin: 25px auto; max-width: 390px; }
+.simple-mode .button-primary { background: #1e5a9a; border: 0; box-shadow: 0 8px 18px rgba(30, 90, 154, .18); color: #fff; text-transform: none; }
+.simple-mode .button-primary:hover { background: #164a81; box-shadow: 0 10px 24px rgba(30, 90, 154, .24); }
+.simple-mode .button-quiet { color: #526173; text-transform: none; }
+.simple-mode .microcopy { color: #84909d; }
+.simple-mode .lock-icon { border-color: #9ca9b6; }
+.room-lobby.simple-mode { background: #f7f8fa; color: #18202b; }
+.room-lobby.simple-mode .lobby-heading { align-self: auto; margin: 0; text-align: center; }
+.room-lobby.simple-mode .lobby-heading .eyebrow { color: #5377a0; }
+.room-lobby.simple-mode .lobby-heading h1 { color: #18202b; text-shadow: none; }
+.room-lobby.simple-mode .lobby-heading h1 em { color: #1e5a9a; }
+.room-lobby.simple-mode .lobby-heading > p { color: #667383; margin: 20px 0 28px; }
+.room-lobby.simple-mode .code-panel { align-self: auto; background: #fff; border: 1px solid #dce2e8; box-shadow: 0 12px 30px rgba(38, 58, 79, .08); margin: 0; padding: 24px 42px 19px; text-align: center; }
+.room-lobby.simple-mode .code-label, .room-lobby.simple-mode .dock-kicker { color: #788392; }
+.room-lobby.simple-mode .code-panel strong { color: #1e5a9a; font-family: 'Courier New', monospace; text-shadow: none; }
+.room-lobby.simple-mode .code-meta { color: #2d8b5b; justify-content: center; }
+.room-lobby.simple-mode .pulse-dot { background: #2d8b5b; }
+.room-lobby.simple-mode .lobby-actions { align-self: auto; margin: 26px 0 0; }
+.room-lobby.simple-mode .button-primary { background: #1e5a9a; border: 0; color: #fff; }
+.room-lobby.simple-mode .qr-placeholder { align-self: auto; color: #667383; margin: 34px 0 0; }
+.room-lobby.simple-mode .qr-grid { background: repeating-linear-gradient(90deg, #526173 0 3px, transparent 3px 6px), repeating-linear-gradient(0deg, #526173 0 3px, transparent 3px 6px); border-color: #526173; }
+.connected-view.simple-mode { background: #f7f8fa; color: #18202b; padding-top: 7vh; }
+.simple-mode .scene-header h1 { color: #18202b; }
+.simple-mode .scene-header h1 em { color: #1e5a9a; }
+.simple-mode .exit-button { border-color: #dce2e8; color: #526173; }
+.simple-mode .room-scene { background: #fff; border-color: #dce2e8; box-shadow: 0 14px 35px rgba(38, 58, 79, .08); height: 220px; }
+.simple-room-content { align-items: center; display: flex; height: 100%; justify-content: center; gap: clamp(20px, 8vw, 110px); }
+.simple-device { align-items: center; display: flex; flex-direction: column; gap: 6px; min-width: 120px; }
+.simple-device-icon { align-items: center; border: 2px solid #1e5a9a; color: #1e5a9a; display: flex; font-size: 27px; height: 58px; justify-content: center; width: 76px; }
+.simple-device:nth-child(3) .simple-device-icon { border-radius: 12px; width: 42px; }
+.simple-device strong { color: #253446; font-size: 13px; font-weight: 600; }.simple-device small { color: #788392; font-size: 10px; }.simple-connection { align-items: center; color: #2d8b5b; display: flex; flex-direction: column; font-size: 11px; gap: 10px; text-transform: uppercase; }.simple-connection span { background: #2d8b5b; height: 1px; opacity: .5; width: 65px; }
+.simple-mode .transfer-dock { background: #fff; border-color: #dce2e8; box-shadow: 0 14px 35px rgba(38, 58, 79, .08); }
+.simple-mode .dock-kicker { color: #526173; }.simple-mode .direction-switch { border-color: #dce2e8; }.simple-mode .direction-switch button { color: #788392; }.simple-mode .direction-switch button.active { background: #e9f1fa; color: #1e5a9a; }.simple-mode .drop-zone { border-color: #b8c5d2; }.simple-mode .drop-zone:hover, .simple-mode .drop-zone.has-file { background: #f4f8fc; border-color: #1e5a9a; }.simple-mode .drop-zone strong { color: #253446; }.simple-mode .drop-zone small { color: #788392; }.simple-mode .upload-mark { border-color: #1e5a9a; color: #1e5a9a; }.simple-mode .transfer-button { background: #1e5a9a; color: #fff; }.simple-mode .transfer-button:disabled { background: #9aa9b8; }
+@media (max-width: 720px) { .topbar-actions { gap: 10px; }.topbar-status { display: none; }.mode-toggle { padding: 8px 9px; }.mode-toggle-icon { font-size: 12px; }.simple-mode .welcome-copy { left: auto; }.simple-mode .welcome-actions { justify-content: center; }.simple-mode .simple-room-content { gap: 8px; }.simple-device { min-width: 88px; }.simple-connection span { width: 25px; }.simple-device-icon { height: 48px; width: 62px; }.connected-view.simple-mode { padding-top: 8vh; }.simple-mode .scene-header h1 { font-size: 3rem; } }
 </style>
