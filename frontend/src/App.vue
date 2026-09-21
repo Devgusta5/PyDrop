@@ -26,6 +26,7 @@ const serverStatus = ref<'idle' | 'checking' | 'waking_up' | 'ready' | 'connecti
 const serverElapsedSeconds = ref(0)
 const roomFull = ref(false)
 const completedTransfers = ref(0)
+const deviceConnectionStatus = ref<'connecting' | 'connected' | 'disconnected'>('connecting')
 let roomConnection: ReturnType<typeof api.connectRoomSocket> | null = null
 let directTransfer: api.DirectTransfer | null = null
 let reconnectTimer = 0
@@ -196,6 +197,7 @@ function connectToRoom() {
       directTransfer?.handleSignal(message).catch((error) => window.alert(String(error)))
     },
     onDisconnect: () => {
+      deviceConnectionStatus.value = 'disconnected'
       if (intentionalDisconnect || roomFull.value) return
       if (reconnectAttempts >= 3) {
         serverStatus.value = 'failed'
@@ -222,7 +224,10 @@ function setupDirectTransfer(initiator: boolean) {
   if (directTransfer || !roomConnection) return
   directTransfer = new api.DirectTransfer(
     (message) => roomConnection?.send(message),
-    () => { spacePhase.value = 'connected' },
+    () => {
+      spacePhase.value = 'connected'
+      deviceConnectionStatus.value = 'connected'
+    },
     (file, blob) => {
       roomFiles.value = [...roomFiles.value, file]
       const url = URL.createObjectURL(blob)
@@ -234,6 +239,12 @@ function setupDirectTransfer(initiator: boolean) {
     },
     (progress) => { transferProgress = progress },
     (message) => window.alert(message),
+    () => {
+      if (view.value === 'connected') {
+        isTransferring.value = false
+        deviceConnectionStatus.value = 'disconnected'
+      }
+    },
   )
   directTransfer.start(initiator).catch((error) => window.alert(String(error)))
 }
@@ -250,6 +261,7 @@ function reset() {
   selectedFile.value = null
   transferComplete.value = false
   isTransferring.value = false
+  deviceConnectionStatus.value = 'connecting'
   serverStatus.value = 'idle'
   serverElapsedSeconds.value = 0
   roomFull.value = false
@@ -292,7 +304,7 @@ function onFileSelected(event: Event) {
 }
 
 async function startTransfer() {
-  if (!selectedFile.value || !directTransfer) return
+  if (!selectedFile.value || !directTransfer || deviceConnectionStatus.value !== 'connected') return
   isTransferring.value = true
   transferComplete.value = false
   transferProgress = 0
@@ -726,6 +738,10 @@ onMounted(() => {
         <div v-if="immersiveMode" class="scene-device-label scene-computer-label">my computer <small>Windows · Chrome</small></div>
         <div v-if="immersiveMode" class="scene-device-label scene-phone-label">my phone <small>Android · Chrome</small></div>
         <div v-if="immersiveMode" class="scene-portal-label">{{ transferComplete ? 'sent' : 'portal' }}</div>
+        <div v-if="deviceConnectionStatus === 'disconnected'" class="connection-lost-banner" role="alert">
+          <strong>Connection lost</strong>
+          <span>The other device is no longer connected. Reconnect it to continue.</span>
+        </div>
         <div v-else class="simple-room-content">
           <div class="simple-device"><span class="simple-device-icon">▣</span><strong>My computer</strong><small>Windows · Chrome</small></div>
           <div class="simple-connection"><span></span><strong>{{ transferComplete ? 'Transfer complete' : 'Connected' }}</strong><span></span></div>
@@ -736,7 +752,7 @@ onMounted(() => {
       <div class="transfer-dock">
         <div class="dock-top"><span class="dock-kicker">choose an action</span><div class="direction-switch"><button :class="{ active: direction === 'send' }" type="button" @click="direction = 'send'">send</button><button :class="{ active: direction === 'receive' }" type="button" @click="direction = 'receive'">receive</button></div></div>
         <label class="drop-zone" :class="{ 'has-file': selectedFile }"><input type="file" @change="onFileSelected" /><span class="upload-mark">↑</span><span><strong>{{ fileLabel }}</strong><small>{{ selectedFile ? 'file selected' : 'choose a file to transfer' }}</small></span></label>
-        <button class="transfer-button" :disabled="!selectedFile || isTransferring" type="button" @click="startTransfer">{{ isTransferring ? 'transferring...' : transferComplete ? 'send another file' : direction === 'send' ? 'send file' : 'receive file' }} <span>→</span></button>
+        <button class="transfer-button" :disabled="!selectedFile || isTransferring || deviceConnectionStatus !== 'connected'" type="button" @click="startTransfer">{{ deviceConnectionStatus === 'disconnected' ? 'device disconnected' : isTransferring ? 'transferring...' : transferComplete ? 'send another file' : direction === 'send' ? 'send file' : 'receive file' }} <span>→</span></button>
       </div>
     </section>
   </main>
@@ -802,6 +818,7 @@ h1 em { color: var(--coral); font-family: Georgia, serif; font-weight: 400; }
 .three-room { inset: 0; position: absolute; z-index: 1; }.three-room canvas { display: block; height: 100%; width: 100%; }.scene-device-label, .scene-portal-label { background: rgba(20,22,19,.78); border: 1px solid rgba(244,241,234,.18); color: var(--ink); font-size: 11px; padding: 8px 10px; position: absolute; z-index: 2; }.scene-device-label small { color: var(--muted); display: block; font-size: 9px; margin-top: 2px; }.scene-computer-label { bottom: 18%; left: 14%; }.scene-phone-label { bottom: 18%; right: 14%; text-align: right; }.scene-portal-label { color: var(--lime); left: 50%; top: 26%; transform: translateX(-50%); text-transform: uppercase; }
 @keyframes fly { 0% { left: 22%; opacity: 0; transform: scale(.5); } 20% { opacity: 1; } 50% { left: 49%; transform: scale(1.1) rotate(20deg); } 100% { left: 76%; opacity: 0; transform: scale(.5) rotate(70deg); } } @keyframes success { 50% { box-shadow: 0 0 0 20px rgba(214,232,106,.1), 0 0 55px 20px rgba(214,232,106,.6); } }
 .transfer-dock { background: rgba(32,34,30,.96); border: 1px solid var(--line); margin: -1px auto 0; max-width: 850px; padding: 22px 25px 25px; position: relative; z-index: 4; }.dock-top { align-items: center; display: flex; justify-content: space-between; margin-bottom: 17px; }.direction-switch { border: 1px solid var(--line); display: flex; padding: 3px; }.direction-switch button { background: transparent; border: 0; color: var(--muted); font-size: 10px; padding: 7px 12px; text-transform: uppercase; }.direction-switch button.active { background: var(--lime); color: var(--night); }.drop-zone { align-items: center; border: 1px dashed rgba(244,241,234,.25); cursor: pointer; display: flex; gap: 15px; min-height: 54px; padding: 10px 16px; transition: border-color .2s, background .2s; }.drop-zone:hover, .drop-zone.has-file { background: rgba(214,232,106,.05); border-color: var(--lime); }.drop-zone input { display: none; }.upload-mark { align-items: center; border: 1px solid var(--coral); border-radius: 50%; color: var(--coral); display: flex; height: 27px; justify-content: center; width: 27px; }.drop-zone strong, .drop-zone small { display: block; font-size: 11px; font-weight: 400; }.drop-zone small { color: var(--muted); margin-top: 2px; }.transfer-button { background: var(--coral); border: 0; color: #211b17; font-size: 12px; font-weight: 700; margin-top: 12px; padding: 14px 17px; width: 100%; }.transfer-button:disabled { cursor: not-allowed; filter: grayscale(.6); opacity: .4; }
+.connection-lost-banner { align-items: flex-start; background: rgba(120, 45, 40, .9); border: 1px solid rgba(231, 131, 99, .65); color: #fff1eb; display: flex; flex-direction: column; gap: 7px; left: 50%; padding: 16px 20px; position: absolute; text-align: left; top: 24px; transform: translateX(-50%); width: min(420px, calc(100% - 36px)); z-index: 5; }.connection-lost-banner strong { font-size: 13px; }.connection-lost-banner span { font-size: 11px; line-height: 1.5; }
 @media (max-width: 720px) { .app-shell { padding: 23px 22px 30px; }.topbar-status { font-size: 9px; }.welcome-view { display: flex; flex-direction: column; justify-content: center; min-height: calc(100vh - 85px); }.welcome-copy { align-self: flex-start; }.welcome-view h1 { font-size: clamp(3rem, 14vw, 5rem); }.hero-orbit { height: 300px; margin-top: 5px; width: 100%; }.hero-core { height: 100px; width: 100px; }.hero-core strong { font-size: 26px; }.label-pc { left: 0; top: 16%; }.label-phone { bottom: 12%; right: 0; }.room-lobby { align-items: flex-start; min-height: calc(100vh - 85px); padding-top: 18vh; text-align: left; }.room-lobby > p { max-width: 290px; }.code-panel { padding: 22px 27px; }.code-meta, .qr-placeholder { justify-content: flex-start; }.connected-view { padding-top: 8vh; }.scene-header { align-items: flex-start; flex-direction: column; gap: 22px; }.scene-header h1 { font-size: 3rem; }.room-scene { height: 430px; margin-top: 28px; }.device-computer { left: 5%; transform: scale(.78); transform-origin: bottom left; }.device-phone { right: 3%; transform: scale(.78); transform-origin: bottom right; }.portal { top: 26%; }.transfer-dock { padding: 18px 15px; }.dock-top { align-items: flex-start; flex-direction: column; gap: 12px; } }
 
 .welcome-view { display: block; height: calc(100svh - 82px); min-height: 540px; overflow: hidden; position: relative; }

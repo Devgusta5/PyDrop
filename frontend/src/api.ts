@@ -213,6 +213,7 @@ export class DirectTransfer {
     private readonly onIncomingFile: (file: TransferFile, blob: Blob) => void,
     private readonly onProgress: (progress: number) => void,
     private readonly onTransferError?: (message: string) => void,
+    private readonly onConnectionLost?: () => void,
   ) {
     this.peer = new RTCPeerConnection({
       iceServers,
@@ -220,6 +221,11 @@ export class DirectTransfer {
     this.peer.onicecandidate = ({ candidate }) => {
       if (candidate) this.sendSignal({ type: 'ice-candidate', candidate: candidate.toJSON() })
     }
+    this.peer.addEventListener('connectionstatechange', () => {
+      if (this.peer.connectionState === 'failed' || this.peer.connectionState === 'disconnected' || this.peer.connectionState === 'closed') {
+        this.onConnectionLost?.()
+      }
+    })
     this.peer.ondatachannel = ({ channel }) => this.attachChannel(channel)
   }
 
@@ -269,6 +275,8 @@ export class DirectTransfer {
     this.channel = channel
     channel.binaryType = 'arraybuffer'
     channel.onopen = () => this.onReady()
+    channel.onclose = () => this.onConnectionLost?.()
+    channel.onerror = () => this.onConnectionLost?.()
     channel.onmessage = (event) => this.handleData(event.data)
   }
 
