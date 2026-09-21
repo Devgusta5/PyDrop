@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import * as THREE from 'three'
 import QRCode from 'qrcode'
+import QrScanner from 'qr-scanner'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as api from './api'
 
@@ -17,6 +18,9 @@ const roomFiles = ref<api.TransferFile[]>([])
 const threeMount = ref<HTMLElement | null>(null)
 const spaceMount = ref<HTMLElement | null>(null)
 const qrCanvas = ref<HTMLCanvasElement | null>(null)
+const qrVideo = ref<HTMLVideoElement | null>(null)
+const isScanningQr = ref(false)
+let qrScanner: QrScanner | null = null
 const spacePhase = ref<'idle' | 'creating' | 'waiting' | 'connected'>('idle')
 const serverStatus = ref<'idle' | 'checking' | 'waking_up' | 'ready' | 'connecting_ws' | 'connected' | 'failed'>('idle')
 const serverElapsedSeconds = ref(0)
@@ -50,6 +54,7 @@ let spaceTargetMouse = { x: 0, y: 0 }
 let spaceStartedAt = 0
 
 const fileLabel = computed(() => selectedFile.value?.name ?? 'solte um arquivo aqui')
+const isMobileDevice = computed(() => /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(navigator.userAgent))
 const isPreparingBackend = computed(() => ['checking', 'waking_up', 'connecting_ws'].includes(serverStatus.value))
 const preparationTitle = computed(() => {
   if (serverStatus.value === 'checking') return 'Checking server...'
@@ -115,6 +120,38 @@ async function joinRoomByCode(rawCode: string) {
 function joinRoom() {
   const code = window.prompt('Enter the room code')
   if (code) joinRoomByCode(code)
+}
+
+async function startQrScanner() {
+  if (!qrVideo.value) return
+  isScanningQr.value = true
+  await nextTick()
+  if (!qrVideo.value) return
+  qrScanner = new QrScanner(qrVideo.value, (result) => {
+    const value = typeof result === 'string' ? result : result.data
+    try {
+      const scannedUrl = new URL(value)
+      const code = scannedUrl.searchParams.get('room')
+      if (!code) throw new Error('This QR code is not a PyDrop room.')
+      stopQrScanner()
+      joinRoomByCode(code)
+    } catch {
+      window.alert('This QR code is not a valid PyDrop room.')
+    }
+  }, { highlightScanRegion: true, highlightCodeOutline: true })
+  try {
+    await qrScanner.start()
+  } catch {
+    stopQrScanner()
+    window.alert('Camera access is required to scan a room QR code.')
+  }
+}
+
+function stopQrScanner() {
+  qrScanner?.stop()
+  qrScanner?.destroy()
+  qrScanner = null
+  isScanningQr.value = false
 }
 
 async function renderRoomQrCode() {
@@ -203,6 +240,7 @@ function setupDirectTransfer(initiator: boolean) {
 }
 
 function reset() {
+  stopQrScanner()
   intentionalDisconnect = true
   window.clearTimeout(reconnectTimer)
   roomConnection?.disconnect()
@@ -597,6 +635,7 @@ watch(isTransferring, (transferring) => {
 onBeforeUnmount(disposeThreeScene)
 onBeforeUnmount(disposeSpaceScene)
 onBeforeUnmount(() => {
+  stopQrScanner()
   roomConnection?.disconnect()
   directTransfer?.close()
 })
@@ -634,6 +673,12 @@ onMounted(() => {
         <div class="welcome-actions">
           <button class="button button-primary" type="button" :disabled="isPreparingBackend" @click="createRoom">{{ isPreparingBackend ? 'preparing server...' : 'create a room' }} <span>↗</span></button>
           <button class="button button-quiet" type="button" @click="joinRoom">join with a code</button>
+          <button v-if="isMobileDevice" class="button button-quiet mobile-qr-button" type="button" @click="startQrScanner">access room with QR code</button>
+        </div>
+        <div v-if="isScanningQr" class="qr-scanner-panel" role="dialog" aria-label="Scan a PyDrop room QR code">
+          <video ref="qrVideo" playsinline></video>
+          <p>Point your camera at the QR code on the other device.</p>
+          <button class="button button-quiet" type="button" @click="stopQrScanner">cancel scan</button>
         </div>
         <div v-if="serverStatus !== 'idle' && view === 'start'" class="server-preparation" aria-live="polite">
           <strong>{{ preparationTitle }}</strong>
@@ -717,6 +762,10 @@ h1 { font-size: clamp(3rem, 5.6vw, 5.8rem); font-weight: 400; letter-spacing: -0
 h1 em { color: var(--coral); font-family: Georgia, serif; font-weight: 400; }
 .intro { color: var(--muted); font-size: 16px; line-height: 1.65; margin: 31px 0; max-width: 365px; }
 .welcome-actions, .lobby-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 19px; }
+.mobile-qr-button { flex-basis: 100%; text-align: left; }
+.qr-scanner-panel { background: #fff; border: 1px solid #dce2e8; color: #18202b; display: grid; gap: 12px; margin-top: 20px; max-width: 320px; padding: 14px; text-align: left; }
+.qr-scanner-panel video { aspect-ratio: 1; background: #101820; display: block; object-fit: cover; width: 100%; }
+.qr-scanner-panel p { font-size: 12px; line-height: 1.5; margin: 0; }
 .button { border: 0; font-size: 12px; letter-spacing: .02em; padding: 15px 20px; transition: transform .25s, background .25s; }
 .button:hover { transform: translateY(-3px); }
 .button-primary { background: var(--lime); color: #1a1b17; font-weight: 700; }
