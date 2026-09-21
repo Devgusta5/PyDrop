@@ -19,6 +19,8 @@ app = FastAPI(title="PyDrop")
 
 frontend_origin = os.getenv("FRONTEND_ORIGIN", "*")
 allowed_origins = [origin.strip() for origin in frontend_origin.split(",") if origin.strip()]
+if frontend_origin != "*" and "https://pydrop.vercel.app" not in allowed_origins:
+    allowed_origins.append("https://pydrop.vercel.app")
 
 # CORS — por enquanto liberado pra qualquer origem (fácil pros testes de dev)
 app.add_middleware(
