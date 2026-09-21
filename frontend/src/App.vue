@@ -16,6 +16,7 @@ const roomFiles = ref<api.TransferFile[]>([])
 const threeMount = ref<HTMLElement | null>(null)
 const spaceMount = ref<HTMLElement | null>(null)
 const spacePhase = ref<'idle' | 'creating' | 'waiting' | 'connected'>('idle')
+const serverStatus = ref<'idle' | 'waking' | 'connecting' | 'ready' | 'failed'>('idle')
 let roomConnection: ReturnType<typeof api.connectRoomSocket> | null = null
 let directTransfer: api.DirectTransfer | null = null
 
@@ -45,15 +46,28 @@ const fileLabel = computed(() => selectedFile.value?.name ?? 'solte um arquivo a
 async function createRoom() {
   view.value = 'room'
   spacePhase.value = 'creating'
-  try {
-    const result = await api.createRoom()
-    roomCode.value = result.code
-    spacePhase.value = 'waiting'
-    connectToRoom()
-  } catch (error) {
-    view.value = 'start'
-    window.alert(error instanceof Error ? error.message : String(error))
+  serverStatus.value = 'waking'
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const result = await api.createRoom()
+      roomCode.value = result.code
+      serverStatus.value = 'ready'
+      spacePhase.value = 'waiting'
+      connectToRoom()
+      return
+    } catch (error) {
+      if (attempt === 3) {
+        serverStatus.value = 'failed'
+        return
+      }
+      serverStatus.value = 'connecting'
+      await new Promise((resolve) => window.setTimeout(resolve, attempt * 1500))
+    }
   }
+}
+
+function retryCreateRoom() {
+  createRoom()
 }
 
 async function joinRoom() {
@@ -123,6 +137,7 @@ function reset() {
   selectedFile.value = null
   transferComplete.value = false
   isTransferring.value = false
+  serverStatus.value = 'idle'
 }
 
 function toggleImmersiveMode() {
@@ -509,7 +524,7 @@ onMounted(() => {
         <h1>Move files<br /><em>simply.</em></h1>
         <p class="intro">Create a temporary room and connect your devices in seconds.</p>
         <div class="welcome-actions">
-          <button class="button button-primary" type="button" @click="createRoom">create a room <span>↗</span></button>
+          <button class="button button-primary" type="button" :disabled="serverStatus === 'waking' || serverStatus === 'connecting'" @click="createRoom">{{ serverStatus === 'waking' || serverStatus === 'connecting' ? 'connecting...' : 'create a room' }} <span>↗</span></button>
           <button class="button button-quiet" type="button" @click="joinRoom">join with a code</button>
         </div>
         <p class="microcopy"><span class="lock-icon">+</span> no account · temporary room</p>
@@ -526,11 +541,15 @@ onMounted(() => {
       </div>
       <div class="code-panel">
         <span class="code-label">room / código</span>
-        <strong>{{ roomCode }}</strong>
-        <div class="code-meta"><span class="pulse-dot"></span> waiting for device</div>
+        <strong>{{ roomCode || '...' }}</strong>
+        <div class="code-meta">
+          <span class="pulse-dot"></span>
+          {{ serverStatus === 'waking' ? 'waking the backend...' : serverStatus === 'connecting' ? 'retrying connection...' : serverStatus === 'failed' ? 'could not connect' : 'waiting for device' }}
+        </div>
       </div>
       <div class="lobby-actions">
-        <button class="button button-primary" type="button" disabled>waiting for another device <span>...</span></button>
+        <button v-if="serverStatus === 'failed'" class="button button-primary" type="button" @click="retryCreateRoom">retry connection <span>↗</span></button>
+        <button v-else class="button button-primary" type="button" disabled>{{ roomCode ? 'waiting for another device' : 'connecting to server' }} <span>...</span></button>
         <button class="button button-quiet" type="button" @click="reset">cancel</button>
       </div>
       <div class="qr-placeholder"><span class="qr-grid"></span><div><strong>or scan to join</strong><small>QR code coming soon</small></div></div>
