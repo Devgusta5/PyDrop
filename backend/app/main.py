@@ -33,7 +33,7 @@ app.include_router(ws_router)
 
 @app.get("/health")
 def health():
-    return {"message": "PyDrop ta on Lil Cria"}
+    return {"message": "PyDrop ta on Lil Bro"}
 
 
 @app.post("/rooms")
