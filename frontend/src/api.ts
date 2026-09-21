@@ -24,8 +24,10 @@ export interface CreateRoomResult {
   url: string
 }
 
+const apiBaseUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init)
+  const response = await fetch(`${apiBaseUrl}${path}`, init)
   if (!response.ok) {
     let detail = `HTTP ${response.status}`
     try {
@@ -57,8 +59,10 @@ export function connectRoomSocket(
     onDisconnect?: () => void
   },
 ): { send: (message: SignalMessage) => void; disconnect: () => void } {
-  const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const socket = new WebSocket(`${protocol}://${window.location.host}/rooms/${encodeURIComponent(code)}/ws`)
+  const signalingUrl = apiBaseUrl
+    ? apiBaseUrl.replace(/^http/, 'ws')
+    : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+  const socket = new WebSocket(`${signalingUrl}/rooms/${encodeURIComponent(code)}/ws`)
   const pending: SignalMessage[] = []
 
   const send = (message: SignalMessage) => {

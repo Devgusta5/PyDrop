@@ -7,6 +7,8 @@ O que este arquivo faz:
 4. Liga o CORS (deixar o frontend Vue falar com a gente)
 """
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -15,10 +17,13 @@ from .ws import router as ws_router
 
 app = FastAPI(title="PyDrop")
 
+frontend_origin = os.getenv("FRONTEND_ORIGIN", "*")
+allowed_origins = [origin.strip() for origin in frontend_origin.split(",") if origin.strip()]
+
 # CORS — por enquanto liberado pra qualquer origem (fácil pros testes de dev)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
