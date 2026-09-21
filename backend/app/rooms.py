@@ -6,11 +6,13 @@ Vai embora quando o servidor reinicia — perfeito para arquivos que expiram.
 """
 import secrets
 import string
+import time
 
 from fastapi import HTTPException
 
 ROOM_CODE_LENGTH = 5
 ALPHABET = string.ascii_uppercase + string.digits
+ROOM_LIFETIME_SECONDS = 60 * 60
 
 # rooms["ABC12"] = {"code": "ABC12", "files": []}
 rooms: dict[str, dict] = {}
@@ -27,16 +29,30 @@ def create_room() -> dict:
         code = generate_code()
         if code not in rooms:
             break
-    rooms[code] = {"code": code, "files": []}
+    rooms[code] = {
+        "code": code,
+        "files": [],
+        "expires_at": time.time() + ROOM_LIFETIME_SECONDS,
+    }
     return rooms[code]
 
 
 def get_room(code: str) -> dict:
     """Busca um room pelo código. Levanta 404 se não existir."""
     room = rooms.get(code.upper())
-    if room is None:
+    if room is None or room["expires_at"] <= time.time():
+        rooms.pop(code.upper(), None)
         raise HTTPException(status_code=404, detail="Room não encontrado ou expirado")
     return room
+
+
+def cleanup_expired() -> int:
+    """Remove salas expiradas e devolve quantas foram removidas."""
+    now = time.time()
+    expired_codes = [code for code, room in rooms.items() if room["expires_at"] <= now]
+    for code in expired_codes:
+        rooms.pop(code, None)
+    return len(expired_codes)
 
 
 def add_file_to_room(code: str, file_id: str) -> None:

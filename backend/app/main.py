@@ -7,7 +7,9 @@ O que este arquivo faz:
 4. Liga o CORS (deixar o frontend Vue falar com a gente)
 """
 
+import asyncio
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +17,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import rooms as rooms_mod
 from .ws import router as ws_router
 
-app = FastAPI(title="PyDrop")
+async def cleanup_rooms_loop():
+    while True:
+        await asyncio.sleep(60)
+        rooms_mod.cleanup_expired()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    cleanup_task = asyncio.create_task(cleanup_rooms_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+
+
+app = FastAPI(title="PyDrop", lifespan=lifespan)
 
 frontend_origin = os.getenv("FRONTEND_ORIGIN", "*")
 allowed_origins = [origin.strip() for origin in frontend_origin.split(",") if origin.strip()]
