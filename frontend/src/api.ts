@@ -35,6 +35,13 @@ export interface CreateRoomResult {
 }
 
 const apiBaseUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
+const iceServers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }]
+const turnUrl = import.meta.env.VITE_TURN_URL?.trim()
+const turnUsername = import.meta.env.VITE_TURN_USERNAME?.trim()
+const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL?.trim()
+if (turnUrl && turnUsername && turnCredential) {
+  iceServers.push({ urls: turnUrl, username: turnUsername, credential: turnCredential })
+}
 const backendReadyCacheMs = 30_000
 let backendReadyAt = 0
 let backendReadyRequest: Promise<void> | null = null
@@ -188,7 +195,7 @@ export class DirectTransfer {
     private readonly onProgress: (progress: number) => void,
   ) {
     this.peer = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+      iceServers,
     })
     this.peer.onicecandidate = ({ candidate }) => {
       if (candidate) this.sendSignal({ type: 'ice-candidate', candidate: candidate.toJSON() })
