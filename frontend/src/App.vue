@@ -123,7 +123,6 @@ function joinRoom() {
 }
 
 async function startQrScanner() {
-  if (!qrVideo.value) return
   isScanningQr.value = true
   await nextTick()
   if (!qrVideo.value) return
