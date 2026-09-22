@@ -84,6 +84,10 @@ const ROOM_LIFETIME_SECONDS = 60 * 60
 const copy = computed<Copy>(() => dictionaries[language.value])
 
 const isMobile = computed(() => /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(navigator.userAgent))
+// iOS never fires beforeinstallprompt; offer the manual "Add to Home Screen" steps instead.
+const isIos = /iPhone|iPad|iPod/i.test(navigator.userAgent)
+const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator as unknown as { standalone?: boolean }).standalone === true
+const showIosInstallHint = ref(false)
 const isPreparingBackend = computed(() =>
   ['checking', 'waking_up', 'connecting_ws'].includes(serverStatus.value),
 )
@@ -1106,7 +1110,16 @@ onBeforeUnmount(() => {
       <button v-if="installPrompt" class="install" type="button" @click="installApp">
         {{ copy.installApp }}
       </button>
+      <!-- iOS has no beforeinstallprompt event; show manual steps instead. -->
+      <button v-else-if="isIos && !isStandalone" class="install" type="button" @click="showIosInstallHint = true">
+        {{ copy.installApp }}
+      </button>
     </footer>
+
+    <div v-if="showIosInstallHint" class="scanner" role="dialog" :aria-label="copy.installApp">
+      <p>{{ copy.installAppIosBody }}</p>
+      <button class="btn ghost" type="button" @click="showIosInstallHint = false">{{ copy.close }}</button>
+    </div>
 
     <!-- WebGL missing: say what is lost and that nothing else is. -->
     <p v-if="immersiveMode && !hasWebGL" class="webgl-note" role="status">
@@ -2032,6 +2045,8 @@ h2 {
   transform: translate(-50%, -50%);
   z-index: 40;
   width: min(420px, calc(100% - var(--space-6)));
+  max-height: calc(100dvh - var(--space-6));
+  overflow: auto;
   display: grid;
   gap: var(--space-3);
   padding: var(--space-4);
@@ -2043,6 +2058,8 @@ h2 {
 
 .scanner video {
   width: 100%;
+  max-height: 50vh;
+  object-fit: cover;
   border-radius: var(--radius);
   background: #000;
 }
