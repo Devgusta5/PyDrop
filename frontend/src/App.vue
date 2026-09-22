@@ -25,6 +25,14 @@ const language = ref<Language>('pt')
 const direction = ref<api.TransferMode>('send')
 const remoteDirection = ref<api.TransferMode>('send')
 const selectedFile = ref<File | null>(null)
+// #2 multi-file: a queue rather than a single slot.
+const queue = ref<File[]>([])
+// #3 dashboard: everything that crossed this room, both directions.
+interface SharedItem { name: string; size: number; direction: 'sent' | 'received'; at: number }
+const shared = ref<SharedItem[]>([])
+// #10 the other device left: a real card with a countdown to room expiry.
+const peerLeftAt = ref(0)
+const peerLeftSeconds = ref(0)
 const activeTransferName = ref('')
 const isTransferring = ref(false)
 const transferComplete = ref(false)
@@ -43,6 +51,8 @@ const isDragOver = ref(false)
 const copyFeedback = ref('')
 const notice = ref<AppError | null>(null)
 const isOffline = ref(false)
+// #7 Captured from beforeinstallprompt; null when already installed or unsupported.
+const installPrompt = ref<{ prompt: () => Promise<void> } | null>(null)
 const coreHovered = ref(false)
 const sceneMount = ref<HTMLElement | null>(null)
 const qrVideo = ref<HTMLVideoElement | null>(null)
@@ -67,6 +77,9 @@ let sceneTransferProgress = -1
 // Bumped on every deliberate (re)connect so a stale socket's disconnect cannot
 // trigger a reconnect loop for a connection we already tore down.
 let connectionGeneration = 0
+let peerLeftTimer = 0
+/** Matches ROOM_LIFETIME_SECONDS in the backend. */
+const ROOM_LIFETIME_SECONDS = 60 * 60
 
 const copy = computed<Copy>(() => dictionaries[language.value])
 
@@ -78,6 +91,12 @@ const preparingLabel = computed(() =>
   entryMode.value === 'join' ? copy.value.joiningRoom : copy.value.creatingRoom,
 )
 const fileLabel = computed(() => selectedFile.value?.name ?? copy.value.choose)
+const queuedBytes = computed(() => queue.value.reduce((n, f) => n + f.size, 0))
+const expiryClock = computed(() => {
+  const m = Math.floor(peerLeftSeconds.value / 60)
+  const sec = peerLeftSeconds.value % 60
+  return `${m}:${String(sec).padStart(2, '0')}`
+})
 const displayRoomCode = computed(() => formatRoomCode(roomCode.value))
 // The QR encodes the deep link the other device opens; RoomQr draws it.
 const joinUrl = computed(() => {
@@ -91,7 +110,7 @@ const joinUrl = computed(() => {
 const normalizedJoinCode = computed(() => joinCode.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase())
 const canTransfer = computed(
   () =>
-    !!selectedFile.value &&
+    queue.value.length > 0 &&
     !isTransferring.value &&
     direction.value === 'send' &&
     deviceConnectionStatus.value === 'connected',
@@ -240,6 +259,8 @@ async function createRoom() {
     return
   }
   entryMode.value = 'create'
+  // #1 Whoever opens the room is the one waiting to be sent something.
+  direction.value = 'receive'
   view.value = 'room'
   setAppState('creating-room')
   copyFeedback.value = ''
@@ -327,7 +348,14 @@ function connectToRoom() {
       if (sessions > 1) handleDevicesConnected(initiator)
     },
     onUserJoined: (sessions) => {
+      clearPeerLeft()
       if (sessions > 1) handleDevicesConnected(true)
+    },
+    // The backend broadcasts this on every peer close; nothing was listening.
+    onUserLeft: () => {
+      if (myGeneration !== connectionGeneration) return
+      deviceConnectionStatus.value = 'disconnected'
+      startPeerLeftCountdown()
     },
     onSignal: (message) => {
       directTransfer?.handleSignal(message).catch(() =>
@@ -336,7 +364,8 @@ function connectToRoom() {
     },
     onDisconnect: () => {
       if (myGeneration !== connectionGeneration) return
-      deviceConnectionStatus.value = 'disconnected'
+      // Losing the signaling socket does not mean the peer left: the data
+      // channel is direct and may still be carrying a transfer.
       if (roomFull.value) return
       if (reconnectAttempts >= 3) {
         serverStatus.value = 'failed'
@@ -361,7 +390,27 @@ function connectToRoom() {
   })
 }
 
+// #10 Rooms live one hour; once alone, say how long is left rather than nothing.
+function startPeerLeftCountdown() {
+  if (peerLeftAt.value) return
+  peerLeftAt.value = Date.now()
+  const tick = () => {
+    const left = ROOM_LIFETIME_SECONDS - Math.floor((Date.now() - peerLeftAt.value) / 1000)
+    peerLeftSeconds.value = Math.max(0, left)
+    if (peerLeftSeconds.value === 0) window.clearInterval(peerLeftTimer)
+  }
+  tick()
+  peerLeftTimer = window.setInterval(tick, 1000)
+}
+
+function clearPeerLeft() {
+  window.clearInterval(peerLeftTimer)
+  peerLeftAt.value = 0
+  peerLeftSeconds.value = 0
+}
+
 function handleDevicesConnected(initiator: boolean) {
+  clearPeerLeft()
   setupDirectTransfer(initiator)
   view.value = 'connected'
   deviceConnectionStatus.value = 'connecting'
@@ -392,6 +441,10 @@ function setupDirectTransfer(initiator: boolean) {
       isReceiving.value = false
       receivePercent.value = 100
       incomingName.value = file.name
+      shared.value = [
+        { name: file.name, size: file.size, direction: 'received', at: Date.now() },
+        ...shared.value,
+      ]
       // Don't declare the whole screen complete while our own send is still running.
       if (!isTransferring.value) {
         transferComplete.value = true
@@ -418,6 +471,11 @@ function setupDirectTransfer(initiator: boolean) {
       }
     },
     (mode) => { remoteDirection.value = mode },
+    () => {
+      // ICE recovered on its own — the device never really went away.
+      deviceConnectionStatus.value = 'connected'
+      clearPeerLeft()
+    },
   )
   directTransfer.setMode(direction.value)
   directTransfer.start(initiator).catch(() =>
@@ -476,33 +534,37 @@ function stopQrScanner() {
 
 // --------------------------------------------------------------------- files
 
-function acceptFile(file: File | null) {
-  if (file) {
-    const error = api.validateTransferFile(file)
-    if (error) {
-      selectedFile.value = null
-      // The only validation users realistically hit is the size ceiling.
-      if (file.size > api.MAX_FILE_SIZE_BYTES) {
-        showError(copy.value.fileTooLarge, copy.value.fileTooLargeBody)
-      } else {
-        showError(copy.value.transferFailed, error)
-      }
-      return
+/** Adds files to the queue, rejecting any that fail validation. */
+function acceptFiles(files: File[]) {
+  const rejected: string[] = []
+  for (const file of files) {
+    if (api.validateTransferFile(file)) rejected.push(file.name)
+    else if (!queue.value.some((q) => q.name === file.name && q.size === file.size)) {
+      queue.value = [...queue.value, file]
     }
   }
-  selectedFile.value = file
+  if (rejected.length) showError(copy.value.fileTooLarge, copy.value.fileTooLargeBody)
+  selectedFile.value = queue.value[0] ?? null
   transferComplete.value = false
   transferPercent.value = 0
-  setAppState(file ? 'file-ready' : immersiveMode.value ? 'inside-room' : 'connected')
+  setAppState(queue.value.length ? 'file-ready' : immersiveMode.value ? 'inside-room' : 'connected')
 }
 
 function onFileSelected(event: Event) {
   const input = event.target as HTMLInputElement
-  acceptFile(input.files?.[0] ?? null)
-  if (!selectedFile.value) input.value = ''
+  acceptFiles(Array.from(input.files ?? []))
+  // Always reset, so picking the same file twice still fires a change event.
+  input.value = ''
+}
+
+function removeQueued(index: number) {
+  queue.value = queue.value.filter((_, i) => i !== index)
+  selectedFile.value = queue.value[0] ?? null
+  if (!queue.value.length) setAppState(immersiveMode.value ? 'inside-room' : 'connected')
 }
 
 function clearFile() {
+  queue.value = []
   selectedFile.value = null
   transferPercent.value = 0
   transferComplete.value = false
@@ -523,22 +585,32 @@ function onDrop(event: DragEvent) {
   event.preventDefault()
   isDragOver.value = false
   if (isTransferring.value) return
-  const file = event.dataTransfer?.files?.[0] ?? null
-  if (file) acceptFile(file)
+  const files = Array.from(event.dataTransfer?.files ?? [])
+  if (files.length) acceptFiles(files)
 }
 
 async function startTransfer() {
-  if (!selectedFile.value || !directTransfer || deviceConnectionStatus.value !== 'connected') return
-  activeTransferName.value = selectedFile.value.name
+  if (!queue.value.length || !directTransfer || deviceConnectionStatus.value !== 'connected') return
   isTransferring.value = true
   transferComplete.value = false
-  transferPercent.value = 0
-  sceneTransferProgress = 0
   setAppState('transferring')
+  // One file at a time over the single channel; the queue drains in order.
+  const batch = [...queue.value]
   try {
-    await directTransfer.sendFile(selectedFile.value)
+    for (const file of batch) {
+      activeTransferName.value = file.name
+      transferPercent.value = 0
+      sceneTransferProgress = 0
+      await directTransfer.sendFile(file)
+      shared.value = [
+        { name: file.name, size: file.size, direction: 'sent', at: Date.now() },
+        ...shared.value,
+      ]
+      queue.value = queue.value.filter((q) => q !== file)
+    }
     transferComplete.value = true
     transferPercent.value = 100
+    selectedFile.value = null
     setAppState('completed')
   } catch {
     setAppState('error')
@@ -556,6 +628,7 @@ function reset(force = false) {
   window.clearTimeout(reconnectTimer)
   window.clearTimeout(traversalTimer)
   window.clearTimeout(pendingDownloadUrl)
+  clearPeerLeft()
   roomConnection?.disconnect()
   directTransfer?.close()
   roomConnection = null
@@ -565,6 +638,8 @@ function reset(force = false) {
   direction.value = 'send'
   remoteDirection.value = 'send'
   selectedFile.value = null
+  queue.value = []
+  shared.value = []
   activeTransferName.value = ''
   incomingName.value = ''
   transferComplete.value = false
@@ -604,6 +679,18 @@ watch([immersiveMode, hasWebGL], () => {
 watch(renderQuality, syncScene)
 
 
+async function installApp() {
+  const event = installPrompt.value
+  if (!event) return
+  installPrompt.value = null
+  await event.prompt()
+}
+
+const handleInstallPrompt = (event: Event) => {
+  event.preventDefault()
+  installPrompt.value = event as unknown as { prompt: () => Promise<void> }
+}
+
 const handleOnline = () => { isOffline.value = false }
 const handleOffline = () => { isOffline.value = true }
 
@@ -612,6 +699,8 @@ onMounted(() => {
   reduceMotion.value = window.matchMedia('(prefers-reduced-motion: reduce)').matches
   isOffline.value = !navigator.onLine
   document.documentElement.lang = language.value
+  window.addEventListener('beforeinstallprompt', handleInstallPrompt)
+  window.addEventListener('appinstalled', () => { installPrompt.value = null })
   window.addEventListener('online', handleOnline)
   window.addEventListener('offline', handleOffline)
   // Phones are the device that scans, so start them at reduced quality.
@@ -627,6 +716,7 @@ onBeforeUnmount(() => {
   stopQrScanner()
   roomConnection?.disconnect()
   directTransfer?.close()
+  window.removeEventListener('beforeinstallprompt', handleInstallPrompt)
   window.removeEventListener('online', handleOnline)
   window.removeEventListener('offline', handleOffline)
   window.clearTimeout(reconnectTimer)
@@ -655,8 +745,24 @@ onBeforeUnmount(() => {
       </button>
 
       <div class="controls">
-        <button class="chip" type="button" :aria-label="copy.language" @click="setLanguage">
-          {{ language.toUpperCase() }}
+        <!-- #5 Shows the language you switch TO, with that locale's flag. -->
+        <button class="chip lang" type="button" :aria-label="copy.language" @click="setLanguage">
+          <span class="flag" aria-hidden="true">
+            <!-- In PT, offer EN: stars and stripes. -->
+            <svg v-if="language === 'pt'" viewBox="0 0 24 16">
+              <rect width="24" height="16" fill="#B31942" />
+              <path d="M0 1.85h24v1.84H0zm0 3.69h24v1.85H0zm0 3.69h24v1.85H0zm0 3.7h24v1.84H0z" fill="#fff" />
+              <rect width="10.5" height="8.6" fill="#0A3161" />
+            </svg>
+            <!-- In EN, offer PT-BR: green field, yellow lozenge, blue globe. -->
+            <svg v-else viewBox="0 0 24 16">
+              <rect width="24" height="16" fill="#009B3A" />
+              <path d="M12 2.3 21.6 8 12 13.7 2.4 8z" fill="#FEDF00" />
+              <circle cx="12" cy="8" r="3.4" fill="#002776" />
+              <path d="M8.9 6.8a7.4 7.4 0 0 1 6.3 2" stroke="#fff" stroke-width=".85" fill="none" />
+            </svg>
+          </span>
+          {{ language === 'pt' ? 'EN' : 'PT' }}
         </button>
 
         <template v-if="immersiveMode">
@@ -723,7 +829,7 @@ onBeforeUnmount(() => {
               autocomplete="off"
               autocapitalize="characters"
               spellcheck="false"
-              placeholder="A7K29XQ4"
+              placeholder="ABCD1234"
               maxlength="9"
             />
             <button
@@ -761,6 +867,15 @@ onBeforeUnmount(() => {
           >
             {{ copy.join }}
           </button>
+          <!-- #6 On a phone, scanning is the fastest way in — so it is a
+               first-class action here rather than buried in the join form. -->
+          <button v-if="isMobile" class="btn ghost scan" type="button" @click="startQrScanner">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+              <path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16" stroke-linecap="round" />
+              <path d="M4 12h16" stroke-linecap="round" opacity=".55" />
+            </svg>
+            {{ copy.scanQr }}
+          </button>
         </div>
 
         <form v-if="isJoinExpanded" class="join" @submit.prevent="submitJoinCode">
@@ -775,7 +890,7 @@ onBeforeUnmount(() => {
               autocomplete="off"
               autocapitalize="characters"
               spellcheck="false"
-              placeholder="A7K29XQ4"
+              placeholder="ABCD1234"
               maxlength="9"
             />
             <button
@@ -786,9 +901,6 @@ onBeforeUnmount(() => {
               {{ copy.joinRoom }}
             </button>
           </div>
-          <button v-if="isMobile" class="link" type="button" @click="startQrScanner">
-            {{ copy.scanQr }}
-          </button>
         </form>
 
         <!-- The free backend sleeps; say so rather than looking broken. A sweep
@@ -847,19 +959,25 @@ onBeforeUnmount(() => {
           <span>{{ copy.waiting }}</span>
         </div>
 
-        <button class="link" type="button" @click="reset()">{{ copy.cancel }}</button>
+        <button class="btn danger" type="button" @click="reset()">{{ copy.cancel }}</button>
       </div>
 
       <!-- The QR is the fastest path on a phone, so it stays visible in both modes
            on desktop; in immersive it sits smaller so the scene keeps the room. -->
-      <RoomQr v-if="joinUrl" :value="joinUrl" :label="copy.scanToJoin" />
+      <RoomQr
+        v-if="joinUrl"
+        :value="joinUrl"
+        :label="copy.scanToJoin"
+        :size="immersiveMode ? 200 : 330"
+      />
     </main>
 
     <!-- ------------------------------------------------------ connected -->
     <main v-else class="stage connected" :class="{ 'on-world': immersiveMode }">
+      <div class="transfer-column">
       <div class="connected-head">
-        <h2>{{ transferComplete ? copy.complete : copy.connectedTitle }}</h2>
-        <p class="lede">{{ transferComplete ? copy.arrived : copy.connectedBody }}</p>
+        <h2>{{ peerLeftAt ? copy.peerLeftTitle : transferComplete ? copy.complete : copy.connectedTitle }}</h2>
+        <p class="lede">{{ peerLeftAt ? copy.peerLeftBody : transferComplete ? copy.arrived : copy.connectedBody }}</p>
       </div>
 
       <!-- In standard mode the 2D field carries the connection; in immersive the 3D does. -->
@@ -877,7 +995,24 @@ onBeforeUnmount(() => {
         {{ copy.enteringRoom }}
       </p>
 
-      <div v-if="deviceConnectionStatus === 'disconnected'" class="banner" role="alert">
+      <!-- #10 The peer really left: say so, and show how long the room lasts. -->
+      <div v-if="peerLeftAt" class="left-card" role="alert">
+        <span class="left-dot" aria-hidden="true"></span>
+        <div>
+          <strong>{{ copy.peerLeftTitle }}</strong>
+          <span>{{ copy.peerLeftBody }}</span>
+          <p class="countdown tabular">
+            {{ copy.roomExpiresIn }} <strong>{{ expiryClock }}</strong>
+          </p>
+        </div>
+        <button class="btn danger small" type="button" @click="reset()">{{ copy.exitRoom }}</button>
+      </div>
+
+      <div
+        v-else-if="deviceConnectionStatus === 'disconnected'"
+        class="banner"
+        role="alert"
+      >
         <strong>{{ copy.connectionLostTitle }}</strong>
         <span>{{ copy.connectionLostBody }}</span>
       </div>
@@ -887,6 +1022,8 @@ onBeforeUnmount(() => {
         :direction="direction"
         :remote-direction="remoteDirection"
         :selected-file="selectedFile"
+        :queue="queue"
+        :queued-bytes="queuedBytes"
         :is-transferring="isTransferring"
         :is-receiving="isReceiving"
         :transfer-complete="transferComplete"
@@ -907,16 +1044,48 @@ onBeforeUnmount(() => {
         @drop="onDrop"
         @send="startTransfer"
         @clear="clearFile"
+        @remove-queued="removeQueued"
       />
 
-      <button class="link leave" type="button" @click="reset()">{{ copy.exitRoom }}</button>
+      <button class="btn danger leave" type="button" @click="reset()">{{ copy.exitRoom }}</button>
+      </div>
+
+      <!-- #3 Everything that crossed this room, newest first. -->
+      <aside class="ledger" :aria-label="copy.sharedTitle">
+        <h3>{{ copy.sharedTitle }}</h3>
+        <p v-if="!shared.length" class="ledger-empty">{{ copy.sharedEmpty }}</p>
+        <ul v-else>
+          <li v-for="item in shared" :key="item.at + item.name">
+            <span class="dir" :class="item.direction" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path
+                  :d="item.direction === 'sent' ? 'M12 19V6m0 0l-5 5m5-5l5 5' : 'M12 5v13m0 0l5-5m-5 5l-5-5'"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </span>
+            <span class="l-name">{{ item.name }}</span>
+            <span class="l-meta tabular">
+              {{ item.direction === 'sent' ? copy.sent : copy.receivedLabel }} ·
+              {{ (item.size / 1024 / 1024).toFixed(1) }} MB
+            </span>
+          </li>
+        </ul>
+      </aside>
     </main>
 
     <footer class="credit">
-      <span>{{ copy.createdBy }}</span>
-      <a href="https://github.com/Devgusta5" target="_blank" rel="noopener noreferrer">
-        Gustavo Rodrigues
+      <a class="gh" href="https://github.com/Devgusta5/PyDrop" target="_blank" rel="noopener noreferrer">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path fill="currentColor" d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38l-.01-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0Z" />
+        </svg>
+        <span>Devgusta5</span>
       </a>
+      <!-- #7 Only appears when the browser says the app is installable. -->
+      <button v-if="installPrompt" class="install" type="button" @click="installApp">
+        {{ copy.installApp }}
+      </button>
     </footer>
 
     <!-- WebGL missing: say what is lost and that nothing else is. -->
@@ -1479,12 +1648,173 @@ h2 {
 }
 
 /* -------------------------------------------------------------- connected */
+/* Transfer on the left, the room's history on the right. */
 .connected {
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-5);
-  max-width: 720px;
-  justify-items: stretch;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  align-items: start;
+  gap: clamp(var(--space-5), 4vw, var(--space-7));
+  max-width: 1100px;
 }
+
+.transfer-column {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+/* #3 the ledger */
+.ledger {
+  background: color-mix(in srgb, var(--graphite) 70%, transparent);
+  border: 1px solid var(--quiet-border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  min-width: 0;
+}
+
+.ledger h3 {
+  font-family: var(--font-brand);
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: var(--space-3);
+}
+
+.ledger-empty {
+  color: var(--muted-gray);
+  font-size: 13px;
+}
+
+.ledger ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+  max-height: 380px;
+  overflow-y: auto;
+}
+
+.ledger li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--quiet-border);
+}
+
+.ledger li:last-child { border-bottom: 0; }
+
+.dir {
+  grid-row: span 2;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+}
+
+/* Lime leaves this device, coral arrives from the other one. */
+.dir.sent { color: var(--lime-flow); }
+.dir.received { color: var(--coral-signal); }
+.dir svg { width: 14px; height: 14px; }
+
+.l-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.l-meta {
+  color: var(--muted-gray);
+  font-size: 11px;
+}
+
+/* #10 peer-left card */
+.left-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--error-wash);
+  border: 1px solid rgba(255, 89, 100, 0.55);
+  border-radius: var(--radius);
+}
+
+.left-card strong { display: block; font-size: 14px; }
+.left-card > div > span { color: var(--muted-gray); font-size: 13px; }
+
+.left-dot {
+  width: 9px;
+  height: 9px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--error-red);
+}
+
+.countdown {
+  margin-top: var(--space-2);
+  color: var(--muted-gray);
+  font-size: 12px;
+}
+
+.countdown strong { display: inline; color: var(--error-red); }
+
+/* #9 destructive actions read as destructive. */
+.btn.danger {
+  background: transparent;
+  border: 1px solid rgba(255, 89, 100, 0.6);
+  color: var(--error-red);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn.danger:hover {
+    background: var(--error-wash);
+    border-color: var(--error-red);
+  }
+}
+
+/* #11 credit + install */
+.gh {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-decoration: none;
+}
+
+.gh svg { width: 15px; height: 15px; }
+.gh:hover { color: var(--soft-white); }
+
+.install {
+  background: transparent;
+  border: 1px solid var(--quiet-border);
+  border-radius: var(--radius);
+  color: var(--muted-gray);
+  font-size: 12px;
+  padding: var(--space-2) var(--space-3);
+  min-height: 34px;
+}
+
+.install:hover { color: var(--lime-flow); border-color: var(--lime-edge); }
+
+/* #5 language flag */
+.chip.lang { gap: var(--space-2); }
+.flag {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 2px;
+}
+.flag svg { width: 18px; height: 12px; display: block; }
+
+/* #6 scan action */
+.btn.scan { gap: var(--space-2); }
+.btn.scan svg { width: 17px; height: 17px; }
 
 .connected-head {
   text-align: left;
@@ -1766,10 +2096,16 @@ h2 {
 /* ------------------------------------------------------------ responsive */
 @media (max-width: 900px) {
   .start,
-  .room {
+  .room,
+  .connected {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--space-6);
   }
+
+  /* The ledger follows the transfer surface rather than sitting beside it. */
+  .ledger ul { max-height: 220px; }
+  .left-card { grid-template-columns: auto minmax(0, 1fr); }
+  .left-card .btn { grid-column: 2; justify-self: start; }
 
   /* The visual reads as a band above the copy rather than a shrunken square. */
   .start .visual {

@@ -37,3 +37,8 @@ __screenshots__/
 
 # Vite
 *.timestamp-*-*.mjs
+
+# Local env overrides (never commit these)
+.env
+.env.local
+.env.*.local

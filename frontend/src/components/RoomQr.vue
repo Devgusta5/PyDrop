@@ -17,15 +17,22 @@
  * assembles rather than appearing. It runs once per room, which is exactly the
  * frequency that earns an entrance.
  */
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import PortalMark from './PortalMark.vue'
 
-const props = defineProps<{ value: string; label: string }>()
+const props = withDefaults(
+  defineProps<{ value: string; label: string; size?: number }>(),
+  { size: 330 },
+)
 
 const canvas = ref<HTMLCanvasElement | null>(null)
+// Drawn at the requested size so a bigger plate is genuinely higher resolution.
+const SIZE = () => props.size
 const revealed = ref(false)
-const SIZE = 184
+// Tracks the cleared centre (2 * 0.115 of the symbol) plus a little margin.
+const badge = computed(() => Math.round(props.size * 0.25))
+const markSize = computed(() => Math.round(badge.value * 0.74))
 const QUIET = 2
 
 let animation = 0
@@ -38,13 +45,13 @@ function draw(progress: number) {
   const data = qr.modules.data
   const dpr = Math.min(window.devicePixelRatio || 1, 3)
 
-  el.width = SIZE * dpr
-  el.height = SIZE * dpr
+  el.width = SIZE() * dpr
+  el.height = SIZE() * dpr
   const ctx = el.getContext('2d')!
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-  ctx.clearRect(0, 0, SIZE, SIZE)
+  ctx.clearRect(0, 0, SIZE(), SIZE())
 
-  const cell = SIZE / (count + QUIET * 2)
+  const cell = SIZE() / (count + QUIET * 2)
   const origin = cell * QUIET
   const mid = (count - 1) / 2
   // Radius the stagger sweeps out from the centre.
@@ -55,7 +62,7 @@ function draw(progress: number) {
   // The plate's own white, painted in: a transparent canvas and gaps between
   // modules both cost scanners contrast, and scannability outranks styling here.
   ctx.fillStyle = '#FFFFFF'
-  ctx.fillRect(0, 0, SIZE, SIZE)
+  ctx.fillRect(0, 0, SIZE(), SIZE())
 
   for (let y = 0; y < count; y += 1) {
     for (let x = 0; x < count; x += 1) {
@@ -109,17 +116,21 @@ function animate() {
   animation = requestAnimationFrame(step)
 }
 
-watch(() => props.value, () => { revealed.value = false; animate() })
+watch([() => props.value, () => props.size], () => { revealed.value = false; animate() })
 onMounted(animate)
 </script>
 
 <template>
   <figure class="qr">
     <div class="plate" :class="{ revealed }">
-      <canvas ref="canvas" :width="SIZE" :height="SIZE" role="img" :aria-label="label"></canvas>
+      <canvas ref="canvas" :style="{ width: size + 'px', height: size + 'px' }" role="img" :aria-label="label"></canvas>
       <!-- The mark sits in the cleared centre, on the plate's own white. -->
-      <span class="badge" aria-hidden="true">
-        <PortalMark :size="34" />
+      <span
+        class="badge"
+        :style="{ width: badge + 'px', height: badge + 'px', borderRadius: badge * 0.26 + 'px' }"
+        aria-hidden="true"
+      >
+        <PortalMark :size="markSize" />
       </span>
     </div>
     <figcaption>{{ label }}</figcaption>
@@ -163,17 +174,14 @@ onMounted(animate)
 
 .plate canvas {
   display: block;
-  width: 184px;
-  height: 184px;
+  max-width: 100%;
+  height: auto;
 }
 
 .badge {
   position: absolute;
   display: grid;
   place-items: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 12px;
   background: var(--soft-white);
   opacity: 0;
   transform: scale(0.94);
@@ -191,7 +199,7 @@ onMounted(animate)
   color: var(--muted-gray);
   font-size: 12px;
   text-align: center;
-  max-width: 190px;
+  max-width: 24ch;
 }
 
 @media (prefers-reduced-motion: reduce) {

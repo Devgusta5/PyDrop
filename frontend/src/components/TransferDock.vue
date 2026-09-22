@@ -10,6 +10,8 @@ defineProps<{
   direction: TransferMode
   remoteDirection: TransferMode
   selectedFile: File | null
+  queue: File[]
+  queuedBytes: number
   isTransferring: boolean
   isReceiving: boolean
   transferComplete: boolean
@@ -33,6 +35,7 @@ defineEmits<{
   (event: 'drop', payload: DragEvent): void
   (event: 'send'): void
   (event: 'clear'): void
+  (event: 'removeQueued', index: number): void
 }>()
 
 function formatBytes(bytes: number) {
@@ -79,7 +82,7 @@ function formatBytes(bytes: number) {
       @dragleave="$emit('dragLeave')"
       @drop="$emit('drop', $event)"
     >
-      <input type="file" :disabled="isTransferring" @change="$emit('selectFile', $event)" />
+      <input type="file" multiple :disabled="isTransferring" @change="$emit('selectFile', $event)" />
       <span class="glyph" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke-linecap="round" stroke-linejoin="round" />
@@ -87,13 +90,11 @@ function formatBytes(bytes: number) {
         </svg>
       </span>
       <span class="label">
-        <strong>{{ fileLabel }}</strong>
-        <small>
-          {{ selectedFile ? formatBytes(selectedFile.size) : copy.dropHint }}
-        </small>
+        <strong>{{ queue.length ? `${queue.length} ${copy.queued}` : copy.chooseFiles }}</strong>
+        <small>{{ queue.length ? formatBytes(queuedBytes) : copy.dropHintMulti }}</small>
       </span>
       <button
-        v-if="selectedFile && !isTransferring"
+        v-if="queue.length && !isTransferring"
         class="clear"
         type="button"
         :aria-label="copy.clearFile"
@@ -104,6 +105,24 @@ function formatBytes(bytes: number) {
         </svg>
       </button>
     </label>
+
+    <!-- #2 The queue itself: each file removable until the batch starts. -->
+    <ul v-if="direction === 'send' && queue.length" class="queue">
+      <li v-for="(file, i) in queue" :key="file.name + file.size">
+        <span class="q-name">{{ file.name }}</span>
+        <span class="q-size tabular">{{ formatBytes(file.size) }}</span>
+        <button
+          v-if="!isTransferring"
+          type="button"
+          :aria-label="copy.removeFromQueue"
+          @click="$emit('removeQueued', i)"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <path d="M7 7l10 10M17 7L7 17" stroke-linecap="round" />
+          </svg>
+        </button>
+      </li>
+    </ul>
 
     <div v-else class="await">
       <span class="glyph coral" aria-hidden="true">
@@ -119,7 +138,7 @@ function formatBytes(bytes: number) {
     </div>
 
     <!-- Progress. Send and receive report separately: both can run at once. -->
-    <div v-if="isTransferring || transferComplete" class="meter" aria-live="polite">
+    <div v-if="direction === 'send' && (isTransferring || transferComplete)" class="meter" aria-live="polite">
       <div class="meter-head">
         <span>{{ transferComplete ? copy.complete : `${copy.sending} ${activeTransferName}` }}</span>
         <strong class="tabular">{{ transferPercent }}%</strong>
@@ -165,7 +184,7 @@ function formatBytes(bytes: number) {
             ? `${copy.sending}...`
             : transferComplete
               ? copy.sendAnother
-              : copy.send
+              : queue.length > 1 ? copy.sendAll : copy.send
       }}
     </button>
   </section>
@@ -368,6 +387,59 @@ function formatBytes(bytes: number) {
 .clear svg {
   width: 15px;
   height: 15px;
+}
+
+.queue {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1px;
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.queue li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--slate-charcoal) 55%, transparent);
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+.q-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.q-size {
+  color: var(--muted-gray);
+  font-size: 12px;
+}
+
+.queue button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  background: none;
+  border: 0;
+  color: var(--muted-gray);
+  border-radius: 3px;
+}
+
+.queue button:hover {
+  color: var(--error-red);
+}
+
+.queue button svg {
+  width: 14px;
+  height: 14px;
 }
 
 .meter {

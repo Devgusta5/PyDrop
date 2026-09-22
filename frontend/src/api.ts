@@ -125,6 +125,7 @@ export function connectRoomSocket(
   code: string,
   handlers: {
     onUserJoined?: (sessions: number) => void
+    onUserLeft?: (sessions: number) => void
     onRoomState?: (sessions: number, initiator: boolean) => void
     onSignal?: (message: SignalMessage) => void
     onDisconnect?: () => void
@@ -157,6 +158,9 @@ export function connectRoomSocket(
     switch (message.type) {
       case 'user_joined':
         handlers.onUserJoined?.(message.sessions as number)
+        break
+      case 'user_left':
+        handlers.onUserLeft?.(message.sessions as number)
         break
       case 'room_state':
         handlers.onRoomState?.(message.sessions as number, message.initiator as boolean)
@@ -195,6 +199,7 @@ export class DirectTransfer {
   private readonly peer: RTCPeerConnection
   private channel: RTCDataChannel | null = null
   private localMode: TransferMode = 'send'
+  private dropTimer = 0
   private pendingCandidates: RTCIceCandidateInit[] = []
   private received: ArrayBuffer[] = []
   private receivedBytes = 0
@@ -210,6 +215,7 @@ export class DirectTransfer {
     private readonly onTransferError?: (message: string) => void,
     private readonly onConnectionLost?: () => void,
     private readonly onRemoteMode?: (mode: TransferMode) => void,
+    private readonly onReconnected?: () => void,
   ) {
     this.peer = new RTCPeerConnection({
       iceServers,
@@ -218,9 +224,20 @@ export class DirectTransfer {
       if (candidate) this.sendSignal({ type: 'ice-candidate', candidate: candidate.toJSON() })
     }
     this.peer.addEventListener('connectionstatechange', () => {
-      if (this.peer.connectionState === 'failed' || this.peer.connectionState === 'disconnected' || this.peer.connectionState === 'closed') {
-        this.onConnectionLost?.()
+      const state = this.peer.connectionState
+      // 'disconnected' is transient in WebRTC and usually recovers by itself —
+      // notably when a phone backgrounds the tab to show its file picker.
+      // Give it a grace period and only report loss if it does not come back.
+      if (state === 'disconnected') {
+        window.clearTimeout(this.dropTimer)
+        this.dropTimer = window.setTimeout(() => {
+          if (this.peer.connectionState === 'disconnected') this.onConnectionLost?.()
+        }, 8000)
+        return
       }
+      window.clearTimeout(this.dropTimer)
+      if (state === 'failed' || state === 'closed') this.onConnectionLost?.()
+      if (state === 'connected') this.onReconnected?.()
     })
     this.peer.ondatachannel = ({ channel }) => this.attachChannel(channel)
   }
@@ -269,6 +286,7 @@ export class DirectTransfer {
   }
 
   close() {
+    window.clearTimeout(this.dropTimer)
     this.channel?.close()
     this.peer.close()
   }
@@ -282,7 +300,10 @@ export class DirectTransfer {
       this.setMode(this.localMode)
       this.onReady()
     }
-    channel.onclose = () => this.onConnectionLost?.()
+    // A closing channel during our own teardown is not a lost peer.
+    channel.onclose = () => {
+      if (this.peer.connectionState !== 'closed') this.onConnectionLost?.()
+    }
     channel.onerror = () => this.onConnectionLost?.()
     channel.onmessage = (event) => this.handleData(event.data)
   }
