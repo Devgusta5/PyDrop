@@ -20,12 +20,15 @@ type AppState =
   | 'error'
 type Language = 'en' | 'pt'
 type RenderQuality = 'high' | 'balanced' | 'reduced'
+type EntryMode = 'create' | 'join' | null
 
 const view = ref<View>('start')
 const appState = ref<AppState>('initial')
-const language = ref<Language>('en')
+const language = ref<Language>('pt')
 const direction = ref<'send' | 'receive'>('send')
 const selectedFile = ref<File | null>(null)
+// Frozen at the moment a transfer starts, so a later file-input change can't corrupt the progress label.
+const activeTransferName = ref('')
 const isTransferring = ref(false)
 const transferComplete = ref(false)
 const transferPercent = ref(0)
@@ -34,7 +37,9 @@ const reduceMotion = ref(false)
 const renderQuality = ref<RenderQuality>('balanced')
 const roomCode = ref('')
 const joinCode = ref('')
+const entryMode = ref<EntryMode>(null)
 const isJoinExpanded = ref(false)
+const isDragOver = ref(false)
 const copyFeedback = ref('')
 const roomFiles = ref<api.TransferFile[]>([])
 const threeMount = ref<HTMLElement | null>(null)
@@ -53,7 +58,10 @@ let directTransfer: api.DirectTransfer | null = null
 let reconnectTimer = 0
 let reconnectAttempts = 0
 let roomEntryTimer = 0
-let intentionalDisconnect = false
+let pendingDownloadUrl = 0
+// Bumped every time we (re)connect on purpose, so a stale onDisconnect from a superseded
+// socket can never trigger a reconnect loop for a connection we already tore down ourselves.
+let connectionGeneration = 0
 
 let renderer: THREE.WebGLRenderer | null = null
 let scene: THREE.Scene | null = null
@@ -97,12 +105,48 @@ const copy = computed(() => {
     connectedTitle: 'Another device joined',
     connectedBody: 'Connected and ready',
     choose: 'Choose a file',
+    chooseOrDrag: 'Choose a file or drag it here',
     send: 'Send file',
     sendAnother: 'Send another file',
     complete: 'Transfer complete',
     arrived: 'Your file arrived safely.',
     enterImmersive: 'Enter immersive mode',
     exitImmersive: 'Exit immersive',
+    exitRoom: 'Exit room',
+    cancel: 'Cancel',
+    retry: 'Try again',
+    retryConnection: 'Try to reconnect',
+    scanQr: 'Scan QR code',
+    scanQrDialog: 'Point your camera at the QR code on the other device.',
+    cancelScan: 'Cancel scan',
+    scanToJoin: 'Scan to join this room',
+    fileSelected: 'File selected',
+    deviceDisconnected: 'Device disconnected',
+    connectionLostTitle: 'Connection lost',
+    connectionLostBody: 'The other device is no longer connected. Reconnect it to continue.',
+    checkingServer: 'Checking server...',
+    startingServer: 'Starting server...',
+    connectingWs: 'Connecting...',
+    unableToConnect: 'Unable to connect.',
+    unableToConnectTitle: 'Unable to connect to the server',
+    serverReady: 'Server ready',
+    readyWhenYouAre: 'Ready when you are.',
+    roomFull: 'This room already has two connected devices.',
+    elapsedTime: 'Elapsed time:',
+    creatingRoom: 'Creating your room...',
+    joiningRoom: 'Joining room...',
+    sending: 'Sending',
+    reduceMotion: 'Reduce motion',
+    motionReduced: 'Motion reduced',
+    quality: 'Quality',
+    qualityHigh: 'High',
+    qualityBalanced: 'Balanced',
+    qualityReduced: 'Reduced',
+    invalidCode: 'Room codes have eight letters or numbers.',
+    invalidQr: 'This QR code is not a valid PyDrop room.',
+    notPyDropQr: 'This QR code is not a PyDrop room.',
+    cameraRequired: 'Camera access is required to scan a room QR code.',
+    confirmLeave: 'A transfer is in progress. Leave anyway?',
   }
   const pt = {
     create: 'Criar uma sala',
@@ -119,37 +163,75 @@ const copy = computed(() => {
     connectedTitle: 'Outro dispositivo entrou',
     connectedBody: 'Conectado e pronto',
     choose: 'Escolher arquivo',
+    chooseOrDrag: 'Escolha um arquivo ou arraste aqui',
     send: 'Enviar arquivo',
     sendAnother: 'Enviar outro arquivo',
     complete: 'Transferência concluída',
     arrived: 'Seu arquivo chegou com segurança.',
     enterImmersive: 'Entrar no modo imersivo',
     exitImmersive: 'Sair do imersivo',
+    exitRoom: 'Sair da sala',
+    cancel: 'Cancelar',
+    retry: 'Tentar novamente',
+    retryConnection: 'Tentar reconectar',
+    scanQr: 'Escanear QR code',
+    scanQrDialog: 'Aponte a câmera para o QR code no outro dispositivo.',
+    cancelScan: 'Cancelar escaneamento',
+    scanToJoin: 'Escaneie para entrar nesta sala',
+    fileSelected: 'Arquivo selecionado',
+    deviceDisconnected: 'Dispositivo desconectado',
+    connectionLostTitle: 'Conexão perdida',
+    connectionLostBody: 'O outro dispositivo não está mais conectado. Reconecte-o para continuar.',
+    checkingServer: 'Verificando servidor...',
+    startingServer: 'Iniciando servidor...',
+    connectingWs: 'Conectando...',
+    unableToConnect: 'Não foi possível conectar.',
+    unableToConnectTitle: 'Não foi possível conectar ao servidor',
+    serverReady: 'Servidor pronto',
+    readyWhenYouAre: 'Pronto quando você estiver.',
+    roomFull: 'Esta sala já tem dois dispositivos conectados.',
+    elapsedTime: 'Tempo decorrido:',
+    creatingRoom: 'Criando sua sala...',
+    joiningRoom: 'Entrando na sala...',
+    sending: 'Enviando',
+    reduceMotion: 'Reduzir movimento',
+    motionReduced: 'Movimento reduzido',
+    quality: 'Qualidade',
+    qualityHigh: 'Alta',
+    qualityBalanced: 'Equilibrada',
+    qualityReduced: 'Reduzida',
+    invalidCode: 'Códigos de sala têm oito letras ou números.',
+    invalidQr: 'Este QR code não é uma sala válida do PyDrop.',
+    notPyDropQr: 'Este QR code não é uma sala do PyDrop.',
+    cameraRequired: 'É necessário acesso à câmera para escanear o QR code da sala.',
+    confirmLeave: 'Uma transferência está em andamento. Sair mesmo assim?',
   }
   return language.value === 'en' ? en : pt
 })
 
 const isMobileDevice = computed(() => /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(navigator.userAgent))
 const isPreparingBackend = computed(() => ['checking', 'waking_up', 'connecting_ws'].includes(serverStatus.value))
-const fileLabel = computed(() => selectedFile.value?.name ?? copy.value.choose)
+const preparingLabel = computed(() => (entryMode.value === 'join' ? copy.value.joiningRoom : copy.value.creatingRoom))
+const fileLabel = computed(() => selectedFile.value?.name ?? copy.value.chooseOrDrag)
 const displayRoomCode = computed(() => formatRoomCode(roomCode.value))
 const normalizedJoinCode = computed(() => joinCode.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase())
 const canTransfer = computed(() => !!selectedFile.value && !isTransferring.value && deviceConnectionStatus.value === 'connected')
 const statusMessage = computed(() => {
-  if (roomFull.value) return 'This room already has two connected devices.'
-  if (serverStatus.value === 'checking') return 'Checking server...'
-  if (serverStatus.value === 'waking_up') return 'Starting server...'
-  if (serverStatus.value === 'connecting_ws') return 'Connecting...'
-  if (serverStatus.value === 'failed') return 'Unable to connect.'
+  if (roomFull.value) return copy.value.roomFull
+  if (serverStatus.value === 'checking') return copy.value.checkingServer
+  if (serverStatus.value === 'waking_up') return copy.value.startingServer
+  if (serverStatus.value === 'connecting_ws') return copy.value.connectingWs
+  if (serverStatus.value === 'failed') return copy.value.unableToConnect
   if (deviceConnectionStatus.value === 'connected') return copy.value.connectedBody
+  if (view.value === 'start') return copy.value.readyWhenYouAre
   return copy.value.waiting
 })
 const preparationTitle = computed(() => {
-  if (serverStatus.value === 'checking') return 'Checking server...'
-  if (serverStatus.value === 'waking_up') return 'Starting server...'
-  if (serverStatus.value === 'connecting_ws') return 'Connecting...'
-  if (serverStatus.value === 'failed') return 'Unable to connect to the server'
-  return 'Server ready'
+  if (serverStatus.value === 'checking') return copy.value.checkingServer
+  if (serverStatus.value === 'waking_up') return copy.value.startingServer
+  if (serverStatus.value === 'connecting_ws') return copy.value.connectingWs
+  if (serverStatus.value === 'failed') return copy.value.unableToConnectTitle
+  return copy.value.serverReady
 })
 
 function formatRoomCode(code: string) {
@@ -175,6 +257,7 @@ function toggleReduceMotion() {
 }
 
 async function createRoom() {
+  entryMode.value = 'create'
   view.value = 'room'
   setAppState('creating-room')
   copyFeedback.value = ''
@@ -192,8 +275,22 @@ async function createRoom() {
   }
 }
 
-function retryCreateRoom() {
-  createRoom()
+// Reconnects to the room we already have (whichever way we got it) instead of
+// silently minting a brand-new room code and stranding the other device.
+async function retryConnection() {
+  if (roomCode.value) {
+    setAppState('creating-room')
+    try {
+      await prepareBackend()
+      setAppState('waiting')
+      connectToRoom()
+    } catch {
+      serverStatus.value = 'failed'
+      setAppState('error')
+    }
+    return
+  }
+  await createRoom()
 }
 
 async function prepareBackend() {
@@ -208,9 +305,10 @@ async function prepareBackend() {
 async function joinRoomByCode(rawCode: string) {
   const code = rawCode.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
   if (!code || !/^[A-Z0-9]{8}$/.test(code)) {
-    if (code) window.alert('Room codes have eight letters or numbers.')
+    if (code) window.alert(copy.value.invalidCode)
     return
   }
+  entryMode.value = 'join'
   roomCode.value = code
   view.value = 'room'
   setAppState('creating-room')
@@ -242,6 +340,7 @@ async function copyRoomCode() {
 }
 
 async function startQrScanner() {
+  stopQrScanner()
   isScanningQr.value = true
   await nextTick()
   if (!qrVideo.value) return
@@ -250,18 +349,18 @@ async function startQrScanner() {
     try {
       const scannedUrl = new URL(value)
       const code = scannedUrl.searchParams.get('room')
-      if (!code) throw new Error('This QR code is not a PyDrop room.')
+      if (!code) throw new Error(copy.value.notPyDropQr)
       stopQrScanner()
       joinRoomByCode(code)
     } catch {
-      window.alert('This QR code is not a valid PyDrop room.')
+      window.alert(copy.value.invalidQr)
     }
   }, { highlightScanRegion: true, highlightCodeOutline: true })
   try {
     await qrScanner.start()
   } catch {
     stopQrScanner()
-    window.alert('Camera access is required to scan a room QR code.')
+    window.alert(copy.value.cameraRequired)
   }
 }
 
@@ -288,11 +387,11 @@ async function renderRoomQrCode() {
 function connectToRoom() {
   window.clearTimeout(reconnectTimer)
   serverStatus.value = 'connecting_ws'
-  intentionalDisconnect = true
+  connectionGeneration += 1
+  const myGeneration = connectionGeneration
   roomConnection?.disconnect()
   directTransfer?.close()
   directTransfer = null
-  intentionalDisconnect = false
   roomConnection = api.connectRoomSocket(roomCode.value, {
     onRoomState: (sessions, initiator) => {
       if (sessions > 1) handleDevicesConnected(initiator)
@@ -304,8 +403,10 @@ function connectToRoom() {
       directTransfer?.handleSignal(message).catch((error) => window.alert(String(error)))
     },
     onDisconnect: () => {
+      // A previous socket we've since replaced — ignore its stale disconnect event.
+      if (myGeneration !== connectionGeneration) return
       deviceConnectionStatus.value = 'disconnected'
-      if (intentionalDisconnect || roomFull.value) return
+      if (roomFull.value) return
       if (reconnectAttempts >= 3) {
         serverStatus.value = 'failed'
         setAppState('error')
@@ -316,6 +417,7 @@ function connectToRoom() {
       reconnectTimer = window.setTimeout(() => connectToRoom(), reconnectAttempts * 1500)
     },
     onClose: (code) => {
+      if (myGeneration !== connectionGeneration) return
       if (code === 1008) {
         roomFull.value = true
         serverStatus.value = 'failed'
@@ -329,7 +431,7 @@ function connectToRoom() {
 function handleDevicesConnected(initiator: boolean) {
   setupDirectTransfer(initiator)
   view.value = 'connected'
-  deviceConnectionStatus.value = 'connected'
+  deviceConnectionStatus.value = 'connecting'
   serverStatus.value = 'connected'
   reconnectAttempts = 0
   setAppState(immersiveMode.value ? 'entering-room' : 'connected')
@@ -356,7 +458,10 @@ function setupDirectTransfer(initiator: boolean) {
       link.href = url
       link.download = file.name
       link.click()
-      URL.revokeObjectURL(url)
+      // Give the browser a moment to hand the blob off before we revoke it —
+      // revoking synchronously right after click() is flaky on some mobile browsers.
+      window.clearTimeout(pendingDownloadUrl)
+      pendingDownloadUrl = window.setTimeout(() => URL.revokeObjectURL(url), 4000)
       transferComplete.value = true
       transferPercent.value = 100
       setAppState('completed')
@@ -376,11 +481,15 @@ function setupDirectTransfer(initiator: boolean) {
   directTransfer.start(initiator).catch((error) => window.alert(String(error)))
 }
 
-function reset() {
+function reset(force = false) {
+  if (!force && isTransferring.value) {
+    if (!window.confirm(copy.value.confirmLeave)) return
+  }
   stopQrScanner()
-  intentionalDisconnect = true
+  connectionGeneration += 1
   window.clearTimeout(reconnectTimer)
   window.clearTimeout(roomEntryTimer)
+  window.clearTimeout(pendingDownloadUrl)
   roomConnection?.disconnect()
   directTransfer?.close()
   roomConnection = null
@@ -388,6 +497,7 @@ function reset() {
   view.value = 'start'
   setAppState('initial')
   selectedFile.value = null
+  activeTransferName.value = ''
   transferComplete.value = false
   isTransferring.value = false
   transferPercent.value = 0
@@ -398,6 +508,12 @@ function reset() {
   roomFull.value = false
   reconnectAttempts = 0
   copyFeedback.value = ''
+  roomCode.value = ''
+  joinCode.value = ''
+  entryMode.value = null
+  isJoinExpanded.value = false
+  isDragOver.value = false
+  roomFiles.value = []
 }
 
 async function prepareOnStartup() {
@@ -409,13 +525,11 @@ async function prepareOnStartup() {
   }
 }
 
-function onFileSelected(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0] ?? null
+// Shared by the file input and drag-and-drop so both paths validate identically.
+function acceptFile(file: File | null) {
   if (file) {
     const validationError = api.validateTransferFile(file)
     if (validationError) {
-      input.value = ''
       selectedFile.value = null
       window.alert(validationError)
       return
@@ -427,8 +541,34 @@ function onFileSelected(event: Event) {
   setAppState(file ? 'file-ready' : 'selecting-file')
 }
 
+function onFileSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0] ?? null
+  acceptFile(file)
+  if (!selectedFile.value) input.value = ''
+}
+
+function onDropZoneDragOver(event: DragEvent) {
+  if (isTransferring.value) return
+  event.preventDefault()
+  isDragOver.value = true
+}
+
+function onDropZoneDragLeave() {
+  isDragOver.value = false
+}
+
+function onDropZoneDrop(event: DragEvent) {
+  event.preventDefault()
+  isDragOver.value = false
+  if (isTransferring.value) return
+  const file = event.dataTransfer?.files?.[0] ?? null
+  if (file) acceptFile(file)
+}
+
 async function startTransfer() {
   if (!selectedFile.value || !directTransfer || deviceConnectionStatus.value !== 'connected') return
+  activeTransferName.value = selectedFile.value.name
   isTransferring.value = true
   transferComplete.value = false
   transferPercent.value = 0
@@ -465,6 +605,25 @@ function addBox(parent: THREE.Object3D, size: [number, number, number], position
   mesh.position.set(...position)
   parent.add(mesh)
   return mesh
+}
+
+// Recursively frees GPU resources (geometry, material, textures) for everything in a subtree.
+// Without this, recreating the scene on every quality/view change leaks VRAM indefinitely.
+function disposeObject3D(root: THREE.Object3D | null) {
+  if (!root) return
+  root.traverse((child) => {
+    const mesh = child as THREE.Mesh | THREE.Points
+    const geometry = (mesh as THREE.Mesh).geometry as THREE.BufferGeometry | undefined
+    geometry?.dispose()
+    const mat = (mesh as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined
+    const materials = Array.isArray(mat) ? mat : mat ? [mat] : []
+    materials.forEach((m) => {
+      Object.values(m).forEach((value) => {
+        if (value && typeof value === 'object' && 'isTexture' in value) (value as THREE.Texture).dispose()
+      })
+      m.dispose()
+    })
+  })
 }
 
 function createThreeScene() {
@@ -586,6 +745,7 @@ function animateThreeScene(time: number) {
 function disposeThreeScene() {
   cancelAnimationFrame(animationFrame)
   resizeObserver?.disconnect()
+  disposeObject3D(scene)
   renderer?.dispose()
   renderer?.domElement.remove()
   renderer = null
@@ -688,7 +848,7 @@ function onSpacePointerMove(event: PointerEvent) {
 }
 
 function onSpacePointerDown() {
-  if (view.value === 'start' && coreHovered && !isPreparingBackend.value) createRoom()
+  if (view.value === 'start' && coreHovered && !isPreparingBackend.value && !isJoinExpanded.value) createRoom()
 }
 
 function onSpacePointerLeave() {
@@ -753,6 +913,7 @@ function disposeSpaceScene() {
     spaceMount.value.removeEventListener('pointerleave', onSpacePointerLeave)
     spaceMount.value.removeEventListener('pointerdown', onSpacePointerDown)
   }
+  disposeObject3D(spaceScene)
   spaceRenderer?.dispose()
   spaceRenderer?.domElement.remove()
   spaceRenderer = null
@@ -794,6 +955,7 @@ onBeforeUnmount(() => {
   directTransfer?.close()
   window.clearTimeout(reconnectTimer)
   window.clearTimeout(roomEntryTimer)
+  window.clearTimeout(pendingDownloadUrl)
 })
 
 onMounted(() => {
@@ -808,21 +970,21 @@ onMounted(() => {
 <template>
   <main class="app-shell" :class="{ 'is-immersive': immersiveMode }">
     <header class="topbar">
-      <button class="brand" type="button" @click="reset" aria-label="PyDrop home">
-        <span class="brand-symbol" aria-hidden="true"><span></span><span></span></span>
+      <button class="brand" type="button" @click="reset()" aria-label="PyDrop home">
+        <img class="brand-symbol" src="/pydrop-icon-192.png" alt="" aria-hidden="true" />
         <span>PyDrop</span>
       </button>
       <div class="topbar-actions">
         <button class="text-control" type="button" @click="setLanguage">{{ language.toUpperCase() }}</button>
         <button v-if="immersiveMode" class="text-control" type="button" :aria-pressed="reduceMotion" @click="toggleReduceMotion">
-          {{ reduceMotion ? 'Motion reduced' : 'Reduce motion' }}
+          {{ reduceMotion ? copy.motionReduced : copy.reduceMotion }}
         </button>
         <label v-if="immersiveMode" class="quality-control">
-          <span>Quality</span>
+          <span>{{ copy.quality }}</span>
           <select v-model="renderQuality">
-            <option value="high">High</option>
-            <option value="balanced">Balanced</option>
-            <option value="reduced">Reduced</option>
+            <option value="high">{{ copy.qualityHigh }}</option>
+            <option value="balanced">{{ copy.qualityBalanced }}</option>
+            <option value="reduced">{{ copy.qualityReduced }}</option>
           </select>
         </label>
         <button class="mode-link" type="button" @click="toggleImmersiveMode">
@@ -837,7 +999,7 @@ onMounted(() => {
         <p>{{ copy.intro }}</p>
         <div class="home-actions">
           <button class="button button-primary" type="button" :disabled="isPreparingBackend" @click="createRoom">
-            {{ isPreparingBackend ? 'Creating your room...' : copy.create }}
+            {{ isPreparingBackend ? preparingLabel : copy.create }}
           </button>
           <button class="button button-secondary" type="button" @click="isJoinExpanded = !isJoinExpanded">
             {{ copy.join }}
@@ -847,14 +1009,14 @@ onMounted(() => {
           <label for="room-code">{{ copy.codeLabel }}</label>
           <div>
             <input id="room-code" v-model="joinCode" inputmode="text" autocomplete="off" placeholder="A7K29XQ4" maxlength="9" />
-            <button class="button button-primary" type="submit" :disabled="normalizedJoinCode.length !== 8">{{ copy.joinRoom }}</button>
+            <button class="button button-primary" type="submit" :disabled="normalizedJoinCode.length !== 8 || isPreparingBackend">{{ copy.joinRoom }}</button>
           </div>
         </form>
         <div v-if="serverStatus !== 'idle'" class="server-preparation" aria-live="polite">
           <strong>{{ preparationTitle }}</strong>
           <span>{{ statusMessage }}</span>
-          <small v-if="isPreparingBackend">Elapsed time: {{ serverElapsedSeconds }}s.</small>
-          <button v-if="serverStatus === 'failed'" class="button button-secondary" type="button" @click="retryCreateRoom">Try again</button>
+          <small v-if="isPreparingBackend">{{ copy.elapsedTime }} {{ serverElapsedSeconds }}s.</small>
+          <button v-if="serverStatus === 'failed'" class="button button-secondary" type="button" @click="retryConnection">{{ copy.retry }}</button>
         </div>
         <p class="microcopy">{{ copy.footer }}</p>
       </div>
@@ -866,7 +1028,7 @@ onMounted(() => {
         <div class="portal-mark"><span></span><span></span></div>
       </div>
       <div v-if="isMobileDevice" class="mobile-scan">
-        <button class="button button-secondary" type="button" @click="startQrScanner">Scan QR code</button>
+        <button class="button button-secondary" type="button" @click="startQrScanner">{{ copy.scanQr }}</button>
       </div>
     </section>
 
@@ -874,16 +1036,16 @@ onMounted(() => {
       <div v-if="hasWebGL" ref="spaceMount" class="space-world" aria-label="Interactive PyDrop 3D space"></div>
       <div v-else class="webgl-fallback">WebGL is unavailable. The simple PyDrop flow is still ready.</div>
       <div class="immersive-core-panel" aria-live="polite">
-        <p>{{ appState === 'creating-room' ? 'Creating your room' : 'Temporary device portal' }}</p>
+        <p>{{ appState === 'creating-room' ? preparingLabel : 'Temporary device portal' }}</p>
         <button class="portal-action" type="button" :disabled="isPreparingBackend" @click="createRoom">
-          {{ isPreparingBackend ? 'Creating your room...' : 'CREATE A ROOM' }}
+          {{ isPreparingBackend ? preparingLabel : 'CREATE A ROOM' }}
         </button>
-        <button class="ghost-action" type="button" @click="isJoinExpanded = !isJoinExpanded">Join with a code</button>
+        <button class="ghost-action" type="button" @click="isJoinExpanded = !isJoinExpanded">{{ copy.join }}</button>
         <form v-if="isJoinExpanded" class="join-inline compact" @submit.prevent="submitJoinCode">
-          <label for="immersive-room-code">Room code</label>
+          <label for="immersive-room-code">{{ copy.codeLabel }}</label>
           <div>
             <input id="immersive-room-code" v-model="joinCode" inputmode="text" autocomplete="off" placeholder="A7K29XQ4" maxlength="9" />
-            <button class="button button-primary" type="submit" :disabled="normalizedJoinCode.length !== 8">Join</button>
+            <button class="button button-primary" type="submit" :disabled="normalizedJoinCode.length !== 8 || isPreparingBackend">{{ copy.joinRoom }}</button>
           </div>
         </form>
       </div>
@@ -902,13 +1064,13 @@ onMounted(() => {
           <small v-if="copyFeedback">{{ copyFeedback }}</small>
         </div>
         <div class="room-actions">
-          <button v-if="serverStatus === 'failed'" class="button button-primary" type="button" @click="retryCreateRoom">Retry connection</button>
-          <button class="button button-secondary" type="button" @click="reset">Cancel</button>
+          <button v-if="serverStatus === 'failed'" class="button button-primary" type="button" @click="retryConnection">{{ copy.retryConnection }}</button>
+          <button class="button button-secondary" type="button" @click="reset()">{{ copy.cancel }}</button>
         </div>
       </div>
       <div class="qr-block">
         <canvas ref="qrCanvas" aria-label="QR code to join this room"></canvas>
-        <span>Scan to join this room</span>
+        <span>{{ copy.scanToJoin }}</span>
       </div>
     </section>
 
@@ -920,10 +1082,10 @@ onMounted(() => {
             <p class="eyebrow">{{ appState === 'completed' ? copy.complete : copy.connectedTitle }}</p>
             <h1>{{ appState === 'completed' ? copy.arrived : 'YOU + MY PHONE' }}</h1>
           </div>
-          <button class="exit-button" type="button" @click="reset">Exit room</button>
+          <button class="exit-button" type="button" @click="reset()">{{ copy.exitRoom }}</button>
         </div>
         <div class="scene-device-label scene-computer-label">YOU <small>Connected</small></div>
-        <div class="scene-device-label scene-phone-label">MY PHONE <small>{{ deviceConnectionStatus === 'connected' ? 'Connected' : 'Disconnected' }}</small></div>
+        <div class="scene-device-label scene-phone-label">MY PHONE <small>{{ deviceConnectionStatus === 'connected' ? 'Connected' : copy.deviceDisconnected }}</small></div>
       </div>
 
       <div v-else class="standard-connected">
@@ -941,8 +1103,9 @@ onMounted(() => {
       </div>
 
       <div v-if="deviceConnectionStatus === 'disconnected'" class="connection-lost-banner" role="alert">
-        <strong>Connection lost</strong>
-        <span>The other device is no longer connected. Reconnect it to continue.</span>
+        <strong>{{ copy.connectionLostTitle }}</strong>
+        <span>{{ copy.connectionLostBody }}</span>
+        <button v-if="appState === 'error'" class="button button-secondary" type="button" @click="retryConnection">{{ copy.retryConnection }}</button>
       </div>
 
       <div class="transfer-dock">
@@ -953,25 +1116,31 @@ onMounted(() => {
             <button :class="{ active: direction === 'receive' }" type="button" @click="direction = 'receive'">Receive</button>
           </div>
         </div>
-        <label class="drop-zone" :class="{ 'has-file': selectedFile }">
-          <input type="file" @change="onFileSelected" />
+        <label
+          class="drop-zone"
+          :class="{ 'has-file': selectedFile, 'is-drag-over': isDragOver, 'is-disabled': isTransferring }"
+          @dragover="onDropZoneDragOver"
+          @dragleave="onDropZoneDragLeave"
+          @drop="onDropZoneDrop"
+        >
+          <input type="file" :disabled="isTransferring" @change="onFileSelected" />
           <span class="upload-mark" aria-hidden="true"></span>
-          <span><strong>{{ fileLabel }}</strong><small>{{ selectedFile ? 'File selected' : 'Choose a file to transfer' }}</small></span>
+          <span><strong>{{ fileLabel }}</strong><small>{{ selectedFile ? copy.fileSelected : copy.chooseOrDrag }}</small></span>
         </label>
         <div v-if="isTransferring || transferComplete" class="transfer-progress" aria-live="polite">
-          <span>{{ transferComplete ? copy.complete : `Sending ${selectedFile?.name ?? 'file'}` }}</span>
+          <span>{{ transferComplete ? copy.complete : `${copy.sending} ${activeTransferName}` }}</span>
           <strong>{{ transferPercent }}%</strong>
         </div>
         <button class="transfer-button" :disabled="!canTransfer" type="button" @click="startTransfer">
-          {{ deviceConnectionStatus === 'disconnected' ? 'Device disconnected' : isTransferring ? 'Sending...' : transferComplete ? copy.sendAnother : copy.send }}
+          {{ deviceConnectionStatus === 'disconnected' ? copy.deviceDisconnected : isTransferring ? `${copy.sending}...` : transferComplete ? copy.sendAnother : copy.send }}
         </button>
       </div>
     </section>
 
     <div v-if="isScanningQr" class="qr-scanner-panel" role="dialog" aria-label="Scan a PyDrop room QR code">
       <video ref="qrVideo" playsinline></video>
-      <p>Point your camera at the QR code on the other device.</p>
-      <button class="button button-secondary" type="button" @click="stopQrScanner">Cancel scan</button>
+      <p>{{ copy.scanQrDialog }}</p>
+      <button class="button button-secondary" type="button" @click="stopQrScanner">{{ copy.cancelScan }}</button>
     </div>
   </main>
 </template>
@@ -981,9 +1150,7 @@ onMounted(() => {
 .app-shell::before { background: radial-gradient(circle at 68% 28%, rgba(183, 243, 74, .08), transparent 32%), radial-gradient(circle at 84% 64%, rgba(255, 107, 94, .08), transparent 30%); content: ''; inset: 0; pointer-events: none; position: absolute; }
 .topbar { align-items: center; display: flex; gap: 24px; justify-content: space-between; margin: 0 auto; max-width: 1220px; position: relative; z-index: 10; }
 .brand { align-items: center; background: transparent; border: 0; color: var(--soft-white); display: flex; font-family: var(--font-brand); font-size: 21px; font-weight: 700; gap: 12px; padding: 0; }
-.brand-symbol { display: grid; height: 29px; place-items: center; position: relative; width: 36px; }
-.brand-symbol span { border: 2px solid var(--lime-flow); border-radius: 999px; height: 22px; position: absolute; transform: rotate(-22deg); width: 22px; }
-.brand-symbol span:last-child { border-color: var(--coral-signal); transform: translateX(11px) rotate(22deg); }
+.brand-symbol { display: block; height: 34px; object-fit: contain; width: 42px; }
 .topbar-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-end; }
 .text-control, .mode-link, .quality-control select { background: rgba(18, 24, 28, .76); border: 1px solid var(--quiet-border); color: var(--soft-white); font-size: 12px; padding: 10px 12px; }
 .quality-control { align-items: center; color: var(--muted-gray); display: flex; font-size: 11px; gap: 8px; }
@@ -1050,14 +1217,17 @@ onMounted(() => {
 .scene-computer-label { bottom: 25%; left: 16%; }
 .scene-phone-label { bottom: 25%; right: 16%; }
 .connection-lost-banner { background: rgba(255, 89, 100, .12); border: 1px solid rgba(255, 89, 100, .55); color: var(--soft-white); display: grid; gap: 4px; margin: 16px 0; padding: 14px; }
+.connection-lost-banner .button { justify-self: start; margin-top: 6px; }
 .transfer-dock { background: rgba(18, 24, 28, .92); border: 1px solid var(--quiet-border); bottom: 24px; left: 50%; max-width: 760px; padding: 17px; position: fixed; transform: translateX(-50%); width: min(760px, calc(100% - 40px)); z-index: 7; }
 .dock-top { align-items: center; display: flex; justify-content: space-between; margin-bottom: 13px; }
 .dock-top > span { color: var(--muted-gray); font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .direction-switch { border: 1px solid var(--quiet-border); display: flex; padding: 3px; }
 .direction-switch button { background: transparent; border: 0; color: var(--muted-gray); font-size: 12px; padding: 7px 11px; }
 .direction-switch button.active { background: var(--lime-flow); color: var(--deep-space); }
-.drop-zone { align-items: center; border: 1px dashed rgba(244, 247, 242, .22); cursor: pointer; display: flex; gap: 14px; min-height: 58px; padding: 10px 13px; }
+.drop-zone { align-items: center; border: 1px dashed rgba(244, 247, 242, .22); cursor: pointer; display: flex; gap: 14px; min-height: 58px; padding: 10px 13px; transition: background .15s ease, border-color .15s ease; }
 .drop-zone:hover, .drop-zone.has-file { background: rgba(183, 243, 74, .05); border-color: var(--lime-flow); }
+.drop-zone.is-drag-over { background: rgba(183, 243, 74, .12); border-color: var(--lime-flow); border-style: solid; }
+.drop-zone.is-disabled { cursor: not-allowed; opacity: .55; }
 .drop-zone input { display: none; }
 .upload-mark { border: 2px solid var(--lime-flow); border-radius: 999px; height: 30px; position: relative; width: 30px; }
 .upload-mark::before, .upload-mark::after { background: var(--lime-flow); content: ''; left: 50%; position: absolute; top: 50%; transform: translate(-50%, -50%); }
