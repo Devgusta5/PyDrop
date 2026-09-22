@@ -41,6 +41,9 @@ const entryMode = ref<EntryMode>(null)
 const isJoinExpanded = ref(false)
 const isDragOver = ref(false)
 const copyFeedback = ref('')
+// One shared error line, rendered as a real role="alert" element instead of window.alert().
+const notice = ref('')
+let noticeTimer = 0
 const roomFiles = ref<api.TransferFile[]>([])
 const threeMount = ref<HTMLElement | null>(null)
 const spaceMount = ref<HTMLElement | null>(null)
@@ -147,6 +150,7 @@ const copy = computed(() => {
     notPyDropQr: 'This QR code is not a PyDrop room.',
     cameraRequired: 'Camera access is required to scan a room QR code.',
     confirmLeave: 'A transfer is in progress. Leave anyway?',
+    dismiss: 'Dismiss message',
   }
   const pt = {
     create: 'Criar uma sala',
@@ -205,6 +209,7 @@ const copy = computed(() => {
     notPyDropQr: 'Este QR code não é uma sala do PyDrop.',
     cameraRequired: 'É necessário acesso à câmera para escanear o QR code da sala.',
     confirmLeave: 'Uma transferência está em andamento. Sair mesmo assim?',
+    dismiss: 'Dispensar mensagem',
   }
   return language.value === 'en' ? en : pt
 })
@@ -240,6 +245,17 @@ function formatRoomCode(code: string) {
 
 function setAppState(state: AppState) {
   appState.value = state
+}
+
+function showNotice(message: string) {
+  notice.value = message
+  window.clearTimeout(noticeTimer)
+  noticeTimer = window.setTimeout(() => { notice.value = '' }, 6000)
+}
+
+function dismissNotice() {
+  window.clearTimeout(noticeTimer)
+  notice.value = ''
 }
 
 function setLanguage() {
@@ -305,7 +321,7 @@ async function prepareBackend() {
 async function joinRoomByCode(rawCode: string) {
   const code = rawCode.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
   if (!code || !/^[A-Z0-9]{8}$/.test(code)) {
-    if (code) window.alert(copy.value.invalidCode)
+    if (code) showNotice(copy.value.invalidCode)
     return
   }
   entryMode.value = 'join'
@@ -353,14 +369,14 @@ async function startQrScanner() {
       stopQrScanner()
       joinRoomByCode(code)
     } catch {
-      window.alert(copy.value.invalidQr)
+      showNotice(copy.value.invalidQr)
     }
   }, { highlightScanRegion: true, highlightCodeOutline: true })
   try {
     await qrScanner.start()
   } catch {
     stopQrScanner()
-    window.alert(copy.value.cameraRequired)
+    showNotice(copy.value.cameraRequired)
   }
 }
 
@@ -400,7 +416,7 @@ function connectToRoom() {
       if (sessions > 1) handleDevicesConnected(true)
     },
     onSignal: (message) => {
-      directTransfer?.handleSignal(message).catch((error) => window.alert(String(error)))
+      directTransfer?.handleSignal(message).catch((error) => showNotice(String(error)))
     },
     onDisconnect: () => {
       // A previous socket we've since replaced — ignore its stale disconnect event.
@@ -470,7 +486,7 @@ function setupDirectTransfer(initiator: boolean) {
       transferPercent.value = Math.round(progress * 100)
       sceneTransferProgress = progress
     },
-    (message) => window.alert(message),
+    (message) => showNotice(message),
     () => {
       if (view.value === 'connected') {
         isTransferring.value = false
@@ -478,7 +494,7 @@ function setupDirectTransfer(initiator: boolean) {
       }
     },
   )
-  directTransfer.start(initiator).catch((error) => window.alert(String(error)))
+  directTransfer.start(initiator).catch((error) => showNotice(String(error)))
 }
 
 function reset(force = false) {
@@ -486,6 +502,7 @@ function reset(force = false) {
     if (!window.confirm(copy.value.confirmLeave)) return
   }
   stopQrScanner()
+  dismissNotice()
   connectionGeneration += 1
   window.clearTimeout(reconnectTimer)
   window.clearTimeout(roomEntryTimer)
@@ -531,7 +548,7 @@ function acceptFile(file: File | null) {
     const validationError = api.validateTransferFile(file)
     if (validationError) {
       selectedFile.value = null
-      window.alert(validationError)
+      showNotice(validationError)
       return
     }
   }
@@ -581,7 +598,7 @@ async function startTransfer() {
     setAppState('completed')
   } catch (error) {
     setAppState('error')
-    window.alert(error instanceof Error ? error.message : String(error))
+    showNotice(error instanceof Error ? error.message : String(error))
   } finally {
     isTransferring.value = false
   }
@@ -956,6 +973,7 @@ onBeforeUnmount(() => {
   window.clearTimeout(reconnectTimer)
   window.clearTimeout(roomEntryTimer)
   window.clearTimeout(pendingDownloadUrl)
+  window.clearTimeout(noticeTimer)
 })
 
 onMounted(() => {
@@ -1137,6 +1155,11 @@ onMounted(() => {
       </div>
     </section>
 
+    <div v-if="notice" class="notice-bar" role="alert">
+      <span>{{ notice }}</span>
+      <button type="button" :aria-label="copy.dismiss" @click="dismissNotice">&times;</button>
+    </div>
+
     <div v-if="isScanningQr" class="qr-scanner-panel" role="dialog" aria-label="Scan a PyDrop room QR code">
       <video ref="qrVideo" playsinline></video>
       <p>{{ copy.scanQrDialog }}</p>
@@ -1240,6 +1263,10 @@ onMounted(() => {
 .transfer-button { background: var(--coral-signal); color: var(--deep-space); margin-top: 12px; width: 100%; }
 .qr-scanner-panel { background: rgba(11, 15, 18, .96); border: 1px solid var(--quiet-border); box-shadow: 0 24px 80px rgba(0, 0, 0, .42); display: grid; gap: 14px; left: 50%; padding: 18px; position: fixed; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100% - 34px)); z-index: 20; }
 .qr-scanner-panel video { background: #000; width: 100%; }
+.notice-bar { align-items: center; background: rgba(18, 24, 28, .96); border: 1px solid rgba(255, 89, 100, .55); border-left: 3px solid var(--error-red); bottom: 24px; box-shadow: 0 18px 50px rgba(0, 0, 0, .46); color: var(--soft-white); display: flex; gap: 14px; left: 24px; padding: 14px 16px; position: fixed; width: min(420px, calc(100% - 48px)); z-index: 30; }
+.notice-bar span { flex: 1; font-size: 14px; }
+.notice-bar button { background: transparent; border: 0; color: var(--muted-gray); font-size: 20px; line-height: 1; padding: 0 4px; }
+.notice-bar button:hover { color: var(--soft-white); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
@@ -1261,5 +1288,7 @@ onMounted(() => {
   .scene-computer-label { bottom: 28%; left: 20px; }
   .scene-phone-label { bottom: 28%; right: 20px; }
   .transfer-dock { bottom: 14px; width: calc(100% - 28px); }
+  /* Above the dock instead of on top of it — both are bottom-anchored on mobile. */
+  .notice-bar { bottom: auto; left: 14px; top: 14px; width: calc(100% - 28px); }
 }
 </style>

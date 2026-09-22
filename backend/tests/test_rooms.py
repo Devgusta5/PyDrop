@@ -51,3 +51,36 @@ class RoomSecurityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignalingHandshakeTests(unittest.TestCase):
+    """Guards the two-device handshake — the unit tests above never open a socket."""
+
+    def setUp(self):
+        rooms.rooms.clear()
+
+    def tearDown(self):
+        rooms.rooms.clear()
+
+    def test_two_devices_connect_and_signaling_is_forwarded(self):
+        from fastapi.testclient import TestClient
+
+        from app.main import app
+
+        client = TestClient(app)
+        code = client.post("/rooms").json()["code"]
+
+        with client.websocket_connect(f"/rooms/{code}/ws") as first:
+            self.assertEqual(
+                first.receive_json(),
+                {"type": "room_state", "sessions": 1, "initiator": True},
+            )
+            with client.websocket_connect(f"/rooms/{code}/ws") as second:
+                self.assertEqual(
+                    second.receive_json(),
+                    {"type": "room_state", "sessions": 2, "initiator": False},
+                )
+                self.assertEqual(first.receive_json(), {"type": "user_joined", "sessions": 2})
+
+                second.send_json({"type": "offer", "description": {"sdp": "x", "type": "offer"}})
+                self.assertEqual(first.receive_json()["type"], "offer")

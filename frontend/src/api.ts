@@ -31,11 +31,6 @@ export function validateTransferFile(file: Pick<TransferFile, 'name' | 'size' | 
 
 export interface CreateRoomResult {
   code: string
-  url: string
-}
-
-export interface TransferStats {
-  completed_transfers: number
 }
 
 const apiBaseUrl = (import.meta.env.VITE_API_URL ?? 'https://pydrop.onrender.com').replace(/\/$/, '')
@@ -120,10 +115,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 /** Cria uma sala nova e devolve o código. (POST /rooms) */
 export async function createRoom(): Promise<CreateRoomResult> {
   return request<CreateRoomResult>('/rooms', { method: 'POST' })
-}
-
-export async function getTransferStats(): Promise<TransferStats> {
-  return request<TransferStats>('/stats')
 }
 
 /**

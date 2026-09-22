@@ -1,6 +1,8 @@
-"""Rooms em memória: criar, buscar pelo código e adicionar arquivos.
+"""Rooms em memória: criar e buscar pelo código.
 
-Conceito-chave: um `room` é só um "grupo" que junta arquivos sob um código.
+Conceito-chave: um `room` é só um "grupo" temporário que une dois dispositivos
+sob um código. Nenhum arquivo passa por aqui — os bytes vão direto de browser
+para browser pelo WebRTC DataChannel.
 Aqui usamos um dict global (rooms) como "banco de dados em memória".
 Vai embora quando o servidor reinicia — perfeito para arquivos que expiram.
 """
@@ -14,7 +16,7 @@ ROOM_CODE_LENGTH = 8
 ALPHABET = string.ascii_uppercase + string.digits
 ROOM_LIFETIME_SECONDS = 60 * 60
 
-# rooms["ABC12"] = {"code": "ABC12", "files": []}
+# rooms["ABC12"] = {"code": "ABC12", "expires_at": 1234.5}
 rooms: dict[str, dict] = {}
 
 
@@ -31,7 +33,6 @@ def create_room() -> dict:
             break
     rooms[code] = {
         "code": code,
-        "files": [],
         "expires_at": time.time() + ROOM_LIFETIME_SECONDS,
     }
     return rooms[code]
@@ -54,8 +55,3 @@ def cleanup_expired() -> int:
         rooms.pop(code, None)
     return len(expired_codes)
 
-
-def add_file_to_room(code: str, file_id: str) -> None:
-    """Registra o id de um arquivo dentro do room (só o metadado)."""
-    room = get_room(code)
-    room["files"].append(file_id)

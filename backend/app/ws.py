@@ -101,12 +101,6 @@ async def handle_room_ws(ws: WebSocket, code: str) -> None:
     if sessions > 1:
         await _broadcast(code, {"type": "user_joined", "sessions": sessions}, excluded=ws)
 
-    # Manda pro recém-chegado: os arquivos que JÁ ESTAVAM no room
-    room = rooms_mod.get_room(code)
-    await ws.send_json(
-        {"type": "initial_files", "file_ids": list(room["files"])}
-    )
-
     # Fica ouvindo sinalizacao ate o cliente fechar a aba / cair a internet
     signal_timestamps: deque[float] = deque()
     try:
