@@ -933,7 +933,7 @@ onBeforeUnmount(() => {
          it reads as though joining failed and dumped them on the wrong page.
          So entryMode splits this into two distinct, honest states. -->
     <main
-      v-if="view === 'room' && entryMode === 'join'"
+      v-else-if="view === 'room' && entryMode === 'join'"
       class="stage room joining"
       :class="{ immersive: immersiveMode }"
     >
