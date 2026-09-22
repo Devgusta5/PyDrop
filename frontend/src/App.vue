@@ -33,7 +33,11 @@ const selectedFile = ref<File | null>(null)
 const activeTransferName = ref('')
 const isTransferring = ref(false)
 const transferComplete = ref(false)
+// Send and receive track separately — a file can arrive while we're still sending one.
 const transferPercent = ref(0)
+const receivePercent = ref(0)
+const isReceiving = ref(false)
+const incomingName = ref('')
 const immersiveMode = ref(false)
 const reduceMotion = ref(false)
 const renderQuality = ref<RenderQuality>('balanced')
@@ -161,6 +165,8 @@ const copy = computed(() => {
     otherIsSending: 'The other device is ready to send.',
     bothReceiving: 'Both devices are in receive mode. One of you needs to switch to Send.',
     receiveModeActive: 'Receive mode',
+    receiving: 'Receiving',
+    received: 'Received',
   }
   const pt = {
     create: 'Criar uma sala',
@@ -228,6 +234,8 @@ const copy = computed(() => {
     otherIsSending: 'O outro dispositivo está pronto para enviar.',
     bothReceiving: 'Os dois dispositivos estão no modo receber. Um de vocês precisa mudar para Enviar.',
     receiveModeActive: 'Modo receber',
+    receiving: 'Recebendo',
+    received: 'Recebido',
   }
   return language.value === 'en' ? en : pt
 })
@@ -516,11 +524,21 @@ function setupDirectTransfer(initiator: boolean) {
       // revoking synchronously right after click() is flaky on some mobile browsers.
       window.clearTimeout(pendingDownloadUrl)
       pendingDownloadUrl = window.setTimeout(() => URL.revokeObjectURL(url), 4000)
-      transferComplete.value = true
-      transferPercent.value = 100
-      setAppState('completed')
+      isReceiving.value = false
+      receivePercent.value = 100
+      incomingName.value = file.name
+      // Don't claim the whole screen is "completed" while our own send is still running.
+      if (!isTransferring.value) {
+        transferComplete.value = true
+        setAppState('completed')
+      }
     },
-    (progress) => {
+    (progress, mode) => {
+      if (mode === 'receive') {
+        isReceiving.value = true
+        receivePercent.value = Math.round(progress * 100)
+        return
+      }
       transferPercent.value = Math.round(progress * 100)
       sceneTransferProgress = progress
     },
@@ -560,6 +578,9 @@ function reset(force = false) {
   transferComplete.value = false
   isTransferring.value = false
   transferPercent.value = 0
+  receivePercent.value = 0
+  isReceiving.value = false
+  incomingName.value = ''
   sceneTransferProgress = -1
   deviceConnectionStatus.value = 'connecting'
   serverStatus.value = 'idle'
@@ -1199,6 +1220,10 @@ onMounted(() => {
           <span>{{ transferComplete ? copy.complete : `${copy.sending} ${activeTransferName}` }}</span>
           <strong>{{ transferPercent }}%</strong>
         </div>
+        <div v-if="isReceiving || (incomingName && !transferComplete)" class="transfer-progress is-receiving" aria-live="polite">
+          <span>{{ isReceiving ? `${copy.receiving} ${incomingName}` : `${copy.received} ${incomingName}` }}</span>
+          <strong>{{ receivePercent }}%</strong>
+        </div>
         <button v-if="direction === 'send'" class="transfer-button" :disabled="!canTransfer" type="button" @click="startTransfer">
           {{ deviceConnectionStatus === 'disconnected' ? copy.deviceDisconnected : isTransferring ? `${copy.sending}...` : transferComplete ? copy.sendAnother : copy.send }}
         </button>
@@ -1317,6 +1342,7 @@ onMounted(() => {
 .peer-mode.is-warning { color: var(--coral-signal); }
 .transfer-progress { align-items: center; color: var(--muted-gray); display: flex; justify-content: space-between; margin: 12px 0 0; }
 .transfer-progress strong { color: var(--lime-flow); font-family: var(--font-mono); }
+.transfer-progress.is-receiving strong { color: var(--coral-signal); }
 .transfer-button { background: var(--coral-signal); color: var(--deep-space); margin-top: 12px; width: 100%; }
 .qr-scanner-panel { background: rgba(11, 15, 18, .96); border: 1px solid var(--quiet-border); box-shadow: 0 24px 80px rgba(0, 0, 0, .42); display: grid; gap: 14px; left: 50%; padding: 18px; position: fixed; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100% - 34px)); z-index: 20; }
 .qr-scanner-panel video { background: #000; width: 100%; }

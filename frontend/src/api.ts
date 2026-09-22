@@ -205,7 +205,8 @@ export class DirectTransfer {
     private readonly sendSignal: (message: SignalingMessage) => void,
     private readonly onReady: () => void,
     private readonly onIncomingFile: (file: TransferFile, blob: Blob) => void,
-    private readonly onProgress: (progress: number) => void,
+    // Sending and receiving can run at the same time, so progress says which one it is.
+    private readonly onProgress: (progress: number, mode: TransferMode) => void,
     private readonly onTransferError?: (message: string) => void,
     private readonly onConnectionLost?: () => void,
     private readonly onRemoteMode?: (mode: TransferMode) => void,
@@ -262,7 +263,7 @@ export class DirectTransfer {
     for (let offset = 0; offset < file.size; offset += chunkSize) {
       while (this.channel.bufferedAmount > chunkSize * 8) await new Promise((resolve) => setTimeout(resolve, 20))
       this.channel.send(await file.slice(offset, offset + chunkSize).arrayBuffer())
-      this.onProgress(Math.min(1, (offset + chunkSize) / file.size))
+      this.onProgress(Math.min(1, (offset + chunkSize) / file.size), 'send')
     }
     this.channel.send(JSON.stringify({ kind: 'file-end' }))
   }
@@ -330,7 +331,7 @@ export class DirectTransfer {
     }
     this.received.push(data)
     this.receivedBytes += data.byteLength
-    this.onProgress(this.receivedBytes / this.incoming.size)
+    this.onProgress(this.receivedBytes / this.incoming.size, 'receive')
   }
 
   private async flushCandidates() {

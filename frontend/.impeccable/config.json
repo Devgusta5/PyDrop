@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "src/App.vue"
+        ],
+        "createdAt": "2026-09-22T18:12:44.913Z",
+        "reason": "Claude: no side-tab accent exists at the flagged lines; the only match is .receive-mark::before, a 45deg-rotated border-bottom/border-right CSS arrow glyph (receive-mode icon), not a card accent border. Pre-existing .server-preparation border-left left untouched pending user decision."
+      }
+    ]
+  }
+}
