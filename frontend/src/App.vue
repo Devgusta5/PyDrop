@@ -928,6 +928,26 @@ onBeforeUnmount(() => {
     </main>
 
     <!-- ----------------------------------------------------------- room -->
+    <!-- The creator waits here and shares a code/QR. A joiner already HAS the
+         code — showing them the same "share this" screen was the actual bug:
+         it reads as though joining failed and dumped them on the wrong page.
+         So entryMode splits this into two distinct, honest states. -->
+    <main
+      v-if="view === 'room' && entryMode === 'join'"
+      class="stage room joining"
+      :class="{ immersive: immersiveMode }"
+    >
+      <div class="room-copy" aria-live="polite">
+        <h2>{{ copy.joiningRoom }}</h2>
+        <p class="lede">{{ copy.joiningBody }}</p>
+        <div class="waiting-row">
+          <span class="pulse" aria-hidden="true"></span>
+          <span class="tabular">{{ displayRoomCode }}</span>
+        </div>
+        <button class="btn danger" type="button" @click="reset()">{{ copy.cancel }}</button>
+      </div>
+    </main>
+
     <main v-else-if="view === 'room'" class="stage room" :class="{ immersive: immersiveMode }">
       <div class="room-copy" aria-live="polite">
         <h2>{{ appState === 'creating-room' ? preparingLabel : copy.roomReady }}</h2>
@@ -1537,6 +1557,19 @@ h2 {
   justify-content: start;
   align-items: center;
   gap: clamp(var(--space-6), 5vw, var(--space-8));
+}
+
+/* The joiner has no QR to pair it with — center the single column instead
+   of leaving it pinned to the left edge of a two-column grid. */
+.room.joining {
+  grid-template-columns: minmax(0, 1fr);
+  justify-content: center;
+  justify-items: center;
+  text-align: center;
+}
+
+.room.joining .waiting-row {
+  justify-content: center;
 }
 
 .code-plate {
