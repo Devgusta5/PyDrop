@@ -25,7 +25,9 @@ type EntryMode = 'create' | 'join' | null
 const view = ref<View>('start')
 const appState = ref<AppState>('initial')
 const language = ref<Language>('pt')
-const direction = ref<'send' | 'receive'>('send')
+const direction = ref<api.TransferMode>('send')
+// What the OTHER device says it is doing, sent over the data channel.
+const remoteDirection = ref<api.TransferMode>('send')
 const selectedFile = ref<File | null>(null)
 // Frozen at the moment a transfer starts, so a later file-input change can't corrupt the progress label.
 const activeTransferName = ref('')
@@ -151,6 +153,14 @@ const copy = computed(() => {
     cameraRequired: 'Camera access is required to scan a room QR code.',
     confirmLeave: 'A transfer is in progress. Leave anyway?',
     dismiss: 'Dismiss message',
+    modeSend: 'Send',
+    modeReceive: 'Receive',
+    waitingForFile: 'Waiting for a file',
+    waitingForFileBody: 'The other device will send it to you.',
+    otherIsReceiving: 'The other device is ready to receive.',
+    otherIsSending: 'The other device is ready to send.',
+    bothReceiving: 'Both devices are in receive mode. One of you needs to switch to Send.',
+    receiveModeActive: 'Receive mode',
   }
   const pt = {
     create: 'Criar uma sala',
@@ -210,6 +220,14 @@ const copy = computed(() => {
     cameraRequired: 'É necessário acesso à câmera para escanear o QR code da sala.',
     confirmLeave: 'Uma transferência está em andamento. Sair mesmo assim?',
     dismiss: 'Dispensar mensagem',
+    modeSend: 'Enviar',
+    modeReceive: 'Receber',
+    waitingForFile: 'Aguardando um arquivo',
+    waitingForFileBody: 'O outro dispositivo vai enviar para você.',
+    otherIsReceiving: 'O outro dispositivo está pronto para receber.',
+    otherIsSending: 'O outro dispositivo está pronto para enviar.',
+    bothReceiving: 'Os dois dispositivos estão no modo receber. Um de vocês precisa mudar para Enviar.',
+    receiveModeActive: 'Modo receber',
   }
   return language.value === 'en' ? en : pt
 })
@@ -220,7 +238,20 @@ const preparingLabel = computed(() => (entryMode.value === 'join' ? copy.value.j
 const fileLabel = computed(() => selectedFile.value?.name ?? copy.value.chooseOrDrag)
 const displayRoomCode = computed(() => formatRoomCode(roomCode.value))
 const normalizedJoinCode = computed(() => joinCode.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase())
-const canTransfer = computed(() => !!selectedFile.value && !isTransferring.value && deviceConnectionStatus.value === 'connected')
+const canTransfer = computed(() =>
+  !!selectedFile.value
+  && !isTransferring.value
+  && direction.value === 'send'
+  && deviceConnectionStatus.value === 'connected',
+)
+// Nobody can send when both sides are waiting to receive — worth calling out.
+const bothReceiving = computed(() => direction.value === 'receive' && remoteDirection.value === 'receive')
+// Tells the user what the other device is doing, and flags the one dead-end combination.
+const peerModeMessage = computed(() => {
+  if (deviceConnectionStatus.value !== 'connected') return ''
+  if (bothReceiving.value) return copy.value.bothReceiving
+  return remoteDirection.value === 'receive' ? copy.value.otherIsReceiving : copy.value.otherIsSending
+})
 const statusMessage = computed(() => {
   if (roomFull.value) return copy.value.roomFull
   if (serverStatus.value === 'checking') return copy.value.checkingServer
@@ -245,6 +276,13 @@ function formatRoomCode(code: string) {
 
 function setAppState(state: AppState) {
   appState.value = state
+}
+
+function setDirection(mode: api.TransferMode) {
+  if (direction.value === mode) return
+  direction.value = mode
+  if (mode === 'receive') selectedFile.value = null
+  directTransfer?.setMode(mode)
 }
 
 function showNotice(message: string) {
@@ -493,7 +531,9 @@ function setupDirectTransfer(initiator: boolean) {
         deviceConnectionStatus.value = 'disconnected'
       }
     },
+    (mode) => { remoteDirection.value = mode },
   )
+  directTransfer.setMode(direction.value)
   directTransfer.start(initiator).catch((error) => showNotice(String(error)))
 }
 
@@ -513,6 +553,8 @@ function reset(force = false) {
   directTransfer = null
   view.value = 'start'
   setAppState('initial')
+  direction.value = 'send'
+  remoteDirection.value = 'send'
   selectedFile.value = null
   activeTransferName.value = ''
   transferComplete.value = false
@@ -1128,13 +1170,14 @@ onMounted(() => {
 
       <div class="transfer-dock">
         <div class="dock-top">
-          <span>{{ selectedFile ? selectedFile.name : 'Direct transfer' }}</span>
-          <div class="direction-switch">
-            <button :class="{ active: direction === 'send' }" type="button" @click="direction = 'send'">Send</button>
-            <button :class="{ active: direction === 'receive' }" type="button" @click="direction = 'receive'">Receive</button>
+          <span>{{ direction === 'receive' ? copy.receiveModeActive : selectedFile ? selectedFile.name : 'Direct transfer' }}</span>
+          <div class="direction-switch" role="group" :aria-label="copy.modeSend + ' / ' + copy.modeReceive">
+            <button :class="{ active: direction === 'send' }" :aria-pressed="direction === 'send'" :disabled="isTransferring" type="button" @click="setDirection('send')">{{ copy.modeSend }}</button>
+            <button :class="{ active: direction === 'receive' }" :aria-pressed="direction === 'receive'" :disabled="isTransferring" type="button" @click="setDirection('receive')">{{ copy.modeReceive }}</button>
           </div>
         </div>
         <label
+          v-if="direction === 'send'"
           class="drop-zone"
           :class="{ 'has-file': selectedFile, 'is-drag-over': isDragOver, 'is-disabled': isTransferring }"
           @dragover="onDropZoneDragOver"
@@ -1145,11 +1188,18 @@ onMounted(() => {
           <span class="upload-mark" aria-hidden="true"></span>
           <span><strong>{{ fileLabel }}</strong><small>{{ selectedFile ? copy.fileSelected : copy.chooseOrDrag }}</small></span>
         </label>
+        <div v-else class="receive-zone">
+          <span class="receive-mark" aria-hidden="true"></span>
+          <span><strong>{{ copy.waitingForFile }}</strong><small>{{ copy.waitingForFileBody }}</small></span>
+        </div>
+        <p v-if="peerModeMessage" class="peer-mode" :class="{ 'is-warning': bothReceiving }" aria-live="polite">
+          {{ peerModeMessage }}
+        </p>
         <div v-if="isTransferring || transferComplete" class="transfer-progress" aria-live="polite">
           <span>{{ transferComplete ? copy.complete : `${copy.sending} ${activeTransferName}` }}</span>
           <strong>{{ transferPercent }}%</strong>
         </div>
-        <button class="transfer-button" :disabled="!canTransfer" type="button" @click="startTransfer">
+        <button v-if="direction === 'send'" class="transfer-button" :disabled="!canTransfer" type="button" @click="startTransfer">
           {{ deviceConnectionStatus === 'disconnected' ? copy.deviceDisconnected : isTransferring ? `${copy.sending}...` : transferComplete ? copy.sendAnother : copy.send }}
         </button>
       </div>
@@ -1258,12 +1308,19 @@ onMounted(() => {
 .upload-mark::after { height: 2px; width: 13px; }
 .drop-zone strong, .drop-zone small { display: block; }
 .drop-zone small { color: var(--muted-gray); font-size: 12px; margin-top: 2px; }
+.receive-zone { align-items: center; border: 1px dashed rgba(255, 107, 94, .38); background: rgba(255, 107, 94, .05); display: flex; gap: 14px; min-height: 58px; padding: 10px 13px; }
+.receive-zone strong, .receive-zone small { display: block; }
+.receive-zone small { color: var(--muted-gray); font-size: 12px; margin-top: 2px; }
+.receive-mark { border: 2px solid var(--coral-signal); border-radius: 999px; flex: none; height: 30px; position: relative; width: 30px; }
+.receive-mark::before { border-bottom: 2px solid var(--coral-signal); border-right: 2px solid var(--coral-signal); content: ''; height: 10px; left: 50%; position: absolute; top: 44%; transform: translate(-50%, -50%) rotate(45deg); width: 10px; }
+.peer-mode { color: var(--muted-gray); font-size: 12px; margin-top: 10px; }
+.peer-mode.is-warning { color: var(--coral-signal); }
 .transfer-progress { align-items: center; color: var(--muted-gray); display: flex; justify-content: space-between; margin: 12px 0 0; }
 .transfer-progress strong { color: var(--lime-flow); font-family: var(--font-mono); }
 .transfer-button { background: var(--coral-signal); color: var(--deep-space); margin-top: 12px; width: 100%; }
 .qr-scanner-panel { background: rgba(11, 15, 18, .96); border: 1px solid var(--quiet-border); box-shadow: 0 24px 80px rgba(0, 0, 0, .42); display: grid; gap: 14px; left: 50%; padding: 18px; position: fixed; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100% - 34px)); z-index: 20; }
 .qr-scanner-panel video { background: #000; width: 100%; }
-.notice-bar { align-items: center; background: rgba(18, 24, 28, .96); border: 1px solid rgba(255, 89, 100, .55); border-left: 3px solid var(--error-red); bottom: 24px; box-shadow: 0 18px 50px rgba(0, 0, 0, .46); color: var(--soft-white); display: flex; gap: 14px; left: 24px; padding: 14px 16px; position: fixed; width: min(420px, calc(100% - 48px)); z-index: 30; }
+.notice-bar { align-items: center; background: rgba(18, 24, 28, .96); border: 1px solid rgba(255, 89, 100, .55); bottom: 24px; box-shadow: 0 18px 50px rgba(0, 0, 0, .46); color: var(--soft-white); display: flex; gap: 14px; left: 24px; padding: 14px 16px; position: fixed; width: min(420px, calc(100% - 48px)); z-index: 30; }
 .notice-bar span { flex: 1; font-size: 14px; }
 .notice-bar button { background: transparent; border: 0; color: var(--muted-gray); font-size: 20px; line-height: 1; padding: 0 4px; }
 .notice-bar button:hover { color: var(--soft-white); }

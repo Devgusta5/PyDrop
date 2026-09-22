@@ -189,9 +189,12 @@ export type SignalMessage =
 
 export type SignalingMessage = SignalMessage | { type: 'transfer-completed'; transfer_id: string }
 
+export type TransferMode = 'send' | 'receive'
+
 export class DirectTransfer {
   private readonly peer: RTCPeerConnection
   private channel: RTCDataChannel | null = null
+  private localMode: TransferMode = 'send'
   private pendingCandidates: RTCIceCandidateInit[] = []
   private received: ArrayBuffer[] = []
   private receivedBytes = 0
@@ -205,6 +208,7 @@ export class DirectTransfer {
     private readonly onProgress: (progress: number) => void,
     private readonly onTransferError?: (message: string) => void,
     private readonly onConnectionLost?: () => void,
+    private readonly onRemoteMode?: (mode: TransferMode) => void,
   ) {
     this.peer = new RTCPeerConnection({
       iceServers,
@@ -242,6 +246,12 @@ export class DirectTransfer {
     }
   }
 
+  /** Tells the other device whether we're sending or waiting to receive. */
+  setMode(mode: TransferMode) {
+    this.localMode = mode
+    if (this.channel?.readyState === 'open') this.channel.send(JSON.stringify({ kind: 'mode', mode }))
+  }
+
   async sendFile(file: File) {
     if (!this.channel || this.channel.readyState !== 'open') throw new Error('The devices are not connected yet')
     const validationError = validateTransferFile(file)
@@ -265,7 +275,12 @@ export class DirectTransfer {
   private attachChannel(channel: RTCDataChannel) {
     this.channel = channel
     channel.binaryType = 'arraybuffer'
-    channel.onopen = () => this.onReady()
+    // Announce our mode as soon as the channel opens — the user may have toggled
+    // it while we were still negotiating, and the other side needs to know.
+    channel.onopen = () => {
+      this.setMode(this.localMode)
+      this.onReady()
+    }
     channel.onclose = () => this.onConnectionLost?.()
     channel.onerror = () => this.onConnectionLost?.()
     channel.onmessage = (event) => this.handleData(event.data)
@@ -273,14 +288,16 @@ export class DirectTransfer {
 
   private handleData(data: string | ArrayBuffer) {
     if (typeof data === 'string') {
-      let message: { kind: string; transferId?: string; name?: string; size?: number; type?: string }
+      let message: { kind: string; transferId?: string; name?: string; size?: number; type?: string; mode?: string }
       try {
         message = JSON.parse(data)
       } catch {
         this.failIncoming('The received transfer metadata is invalid.')
         return
       }
-      if (message.kind === 'file') {
+      if (message.kind === 'mode') {
+        if (message.mode === 'send' || message.mode === 'receive') this.onRemoteMode?.(message.mode)
+      } else if (message.kind === 'file') {
         const incoming = {
           name: message.name || '',
           size: message.size ?? -1,
