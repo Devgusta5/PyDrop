@@ -1,0 +1,39 @@
+{
+  "name": "PyDrop — Direct file transfer",
+  "short_name": "PyDrop",
+  "description": "Transfer files directly between your devices. No account, no permanent storage.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0B0F12",
+  "theme_color": "#0B0F12",
+  "categories": ["utilities", "productivity"],
+  "icons": [
+    {
+      "src": "/pydrop-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pydrop-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pydrop-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/pydrop-icon-monochrome-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "monochrome"
+    }
+  ]
+}

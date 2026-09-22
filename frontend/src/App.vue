@@ -1,289 +1,157 @@
 <script setup lang="ts">
-import * as THREE from 'three'
-import QRCode from 'qrcode'
 import QrScanner from 'qr-scanner'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as api from './api'
+import { dictionaries, type Copy, type Language } from './copy'
+import type { PyDropScene, Quality, SceneState } from './scene'
+import PortalMark from './components/PortalMark.vue'
+import ConnectionField from './components/ConnectionField.vue'
+import TransferDock from './components/TransferDock.vue'
+import RoomQr from './components/RoomQr.vue'
 
 type View = 'start' | 'room' | 'connected'
-type AppState =
-  | 'initial'
-  | 'creating-room'
-  | 'waiting'
-  | 'connected'
-  | 'entering-room'
-  | 'inside-room'
-  | 'selecting-file'
-  | 'file-ready'
-  | 'transferring'
-  | 'completed'
-  | 'error'
-type Language = 'en' | 'pt'
-type RenderQuality = 'high' | 'balanced' | 'reduced'
+type AppState = SceneState
 type EntryMode = 'create' | 'join' | null
+/** Errors get a title + body + recovery action rather than a raw string. */
+interface AppError {
+  title: string
+  body: string
+  action?: 'retry' | 'newRoom'
+}
 
 const view = ref<View>('start')
 const appState = ref<AppState>('initial')
 const language = ref<Language>('pt')
 const direction = ref<api.TransferMode>('send')
-// What the OTHER device says it is doing, sent over the data channel.
 const remoteDirection = ref<api.TransferMode>('send')
 const selectedFile = ref<File | null>(null)
-// Frozen at the moment a transfer starts, so a later file-input change can't corrupt the progress label.
 const activeTransferName = ref('')
 const isTransferring = ref(false)
 const transferComplete = ref(false)
-// Send and receive track separately — a file can arrive while we're still sending one.
 const transferPercent = ref(0)
 const receivePercent = ref(0)
 const isReceiving = ref(false)
 const incomingName = ref('')
 const immersiveMode = ref(false)
 const reduceMotion = ref(false)
-const renderQuality = ref<RenderQuality>('balanced')
+const renderQuality = ref<Quality>('balanced')
 const roomCode = ref('')
 const joinCode = ref('')
 const entryMode = ref<EntryMode>(null)
 const isJoinExpanded = ref(false)
 const isDragOver = ref(false)
 const copyFeedback = ref('')
-// One shared error line, rendered as a real role="alert" element instead of window.alert().
-const notice = ref('')
-let noticeTimer = 0
-const roomFiles = ref<api.TransferFile[]>([])
-const threeMount = ref<HTMLElement | null>(null)
-const spaceMount = ref<HTMLElement | null>(null)
-const qrCanvas = ref<HTMLCanvasElement | null>(null)
+const notice = ref<AppError | null>(null)
+const isOffline = ref(false)
+const coreHovered = ref(false)
+const sceneMount = ref<HTMLElement | null>(null)
 const qrVideo = ref<HTMLVideoElement | null>(null)
+const joinInput = ref<HTMLInputElement | null>(null)
 const isScanningQr = ref(false)
 const hasWebGL = ref(true)
-let qrScanner: QrScanner | null = null
 const serverStatus = ref<'idle' | 'checking' | 'waking_up' | 'ready' | 'connecting_ws' | 'connected' | 'failed'>('idle')
 const serverElapsedSeconds = ref(0)
 const roomFull = ref(false)
 const deviceConnectionStatus = ref<'connecting' | 'connected' | 'disconnected'>('connecting')
+
+let qrScanner: QrScanner | null = null
 let roomConnection: ReturnType<typeof api.connectRoomSocket> | null = null
 let directTransfer: api.DirectTransfer | null = null
+let scene: PyDropScene | null = null
 let reconnectTimer = 0
 let reconnectAttempts = 0
-let roomEntryTimer = 0
+let traversalTimer = 0
+let noticeTimer = 0
 let pendingDownloadUrl = 0
-// Bumped every time we (re)connect on purpose, so a stale onDisconnect from a superseded
-// socket can never trigger a reconnect loop for a connection we already tore down ourselves.
+let sceneTransferProgress = -1
+// Bumped on every deliberate (re)connect so a stale socket's disconnect cannot
+// trigger a reconnect loop for a connection we already tore down.
 let connectionGeneration = 0
 
-let renderer: THREE.WebGLRenderer | null = null
-let scene: THREE.Scene | null = null
-let camera: THREE.PerspectiveCamera | null = null
-let animationFrame = 0
-let resizeObserver: ResizeObserver | null = null
-let roomPortal: THREE.Group | null = null
-let transferObject: THREE.Mesh | null = null
-let cameraEntry = 0
-let sceneTransferProgress = -1
+const copy = computed<Copy>(() => dictionaries[language.value])
 
-let spaceRenderer: THREE.WebGLRenderer | null = null
-let spaceScene: THREE.Scene | null = null
-let spaceCamera: THREE.PerspectiveCamera | null = null
-let spaceAnimationFrame = 0
-let spaceResizeObserver: ResizeObserver | null = null
-let spaceCore: THREE.Group | null = null
-let spaceRemote: THREE.Mesh | null = null
-let spaceStars: THREE.Points | null = null
-let spaceParticles: THREE.Points | null = null
-let spaceMouse = { x: 0, y: 0 }
-let spaceTargetMouse = { x: 0, y: 0 }
-let spaceStartedAt = 0
-let spaceRaycaster = new THREE.Raycaster()
-let spacePointer = new THREE.Vector2()
-let coreHovered = false
-
-const copy = computed(() => {
-  const en = {
-    create: 'Create a room',
-    join: 'Join with a code',
-    headline: 'Transfer files\nbetween your devices.',
-    intro: 'Direct connection. No account. No permanent storage.',
-    footer: 'No account · Direct transfer · Rooms expire after 1 hour',
-    codeLabel: 'Room code',
-    joinRoom: 'Join room',
-    roomReady: 'Your room is ready',
-    waiting: 'Waiting for another device',
-    copyCode: 'Copy room code',
-    copied: 'Room code copied',
-    connectedTitle: 'Another device joined',
-    connectedBody: 'Connected and ready',
-    choose: 'Choose a file',
-    chooseOrDrag: 'Choose a file or drag it here',
-    send: 'Send file',
-    sendAnother: 'Send another file',
-    complete: 'Transfer complete',
-    arrived: 'Your file arrived safely.',
-    enterImmersive: 'Enter immersive mode',
-    exitImmersive: 'Exit immersive',
-    exitRoom: 'Exit room',
-    cancel: 'Cancel',
-    retry: 'Try again',
-    retryConnection: 'Try to reconnect',
-    scanQr: 'Scan QR code',
-    scanQrDialog: 'Point your camera at the QR code on the other device.',
-    cancelScan: 'Cancel scan',
-    scanToJoin: 'Scan to join this room',
-    fileSelected: 'File selected',
-    deviceDisconnected: 'Device disconnected',
-    connectionLostTitle: 'Connection lost',
-    connectionLostBody: 'The other device is no longer connected. Reconnect it to continue.',
-    checkingServer: 'Checking server...',
-    startingServer: 'Starting server...',
-    connectingWs: 'Connecting...',
-    unableToConnect: 'Unable to connect.',
-    unableToConnectTitle: 'Unable to connect to the server',
-    serverReady: 'Server ready',
-    readyWhenYouAre: 'Ready when you are.',
-    roomFull: 'This room already has two connected devices.',
-    elapsedTime: 'Elapsed time:',
-    creatingRoom: 'Creating your room...',
-    joiningRoom: 'Joining room...',
-    sending: 'Sending',
-    reduceMotion: 'Reduce motion',
-    motionReduced: 'Motion reduced',
-    quality: 'Quality',
-    qualityHigh: 'High',
-    qualityBalanced: 'Balanced',
-    qualityReduced: 'Reduced',
-    invalidCode: 'Room codes have eight letters or numbers.',
-    invalidQr: 'This QR code is not a valid PyDrop room.',
-    notPyDropQr: 'This QR code is not a PyDrop room.',
-    cameraRequired: 'Camera access is required to scan a room QR code.',
-    confirmLeave: 'A transfer is in progress. Leave anyway?',
-    dismiss: 'Dismiss message',
-    modeSend: 'Send',
-    modeReceive: 'Receive',
-    waitingForFile: 'Waiting for a file',
-    waitingForFileBody: 'The other device will send it to you.',
-    otherIsReceiving: 'The other device is ready to receive.',
-    otherIsSending: 'The other device is ready to send.',
-    bothReceiving: 'Both devices are in receive mode. One of you needs to switch to Send.',
-    receiveModeActive: 'Receive mode',
-    receiving: 'Receiving',
-    received: 'Received',
-  }
-  const pt = {
-    create: 'Criar uma sala',
-    join: 'Entrar com um código',
-    headline: 'Transfira arquivos\nentre seus dispositivos.',
-    intro: 'Conexão direta. Sem conta. Sem armazenamento permanente.',
-    footer: 'Sem conta · Transferência direta · Salas expiram em 1 hora',
-    codeLabel: 'Código da sala',
-    joinRoom: 'Entrar na sala',
-    roomReady: 'Sua sala está pronta',
-    waiting: 'Aguardando outro dispositivo',
-    copyCode: 'Copiar código',
-    copied: 'Código copiado',
-    connectedTitle: 'Outro dispositivo entrou',
-    connectedBody: 'Conectado e pronto',
-    choose: 'Escolher arquivo',
-    chooseOrDrag: 'Escolha um arquivo ou arraste aqui',
-    send: 'Enviar arquivo',
-    sendAnother: 'Enviar outro arquivo',
-    complete: 'Transferência concluída',
-    arrived: 'Seu arquivo chegou com segurança.',
-    enterImmersive: 'Entrar no modo imersivo',
-    exitImmersive: 'Sair do imersivo',
-    exitRoom: 'Sair da sala',
-    cancel: 'Cancelar',
-    retry: 'Tentar novamente',
-    retryConnection: 'Tentar reconectar',
-    scanQr: 'Escanear QR code',
-    scanQrDialog: 'Aponte a câmera para o QR code no outro dispositivo.',
-    cancelScan: 'Cancelar escaneamento',
-    scanToJoin: 'Escaneie para entrar nesta sala',
-    fileSelected: 'Arquivo selecionado',
-    deviceDisconnected: 'Dispositivo desconectado',
-    connectionLostTitle: 'Conexão perdida',
-    connectionLostBody: 'O outro dispositivo não está mais conectado. Reconecte-o para continuar.',
-    checkingServer: 'Verificando servidor...',
-    startingServer: 'Iniciando servidor...',
-    connectingWs: 'Conectando...',
-    unableToConnect: 'Não foi possível conectar.',
-    unableToConnectTitle: 'Não foi possível conectar ao servidor',
-    serverReady: 'Servidor pronto',
-    readyWhenYouAre: 'Pronto quando você estiver.',
-    roomFull: 'Esta sala já tem dois dispositivos conectados.',
-    elapsedTime: 'Tempo decorrido:',
-    creatingRoom: 'Criando sua sala...',
-    joiningRoom: 'Entrando na sala...',
-    sending: 'Enviando',
-    reduceMotion: 'Reduzir movimento',
-    motionReduced: 'Movimento reduzido',
-    quality: 'Qualidade',
-    qualityHigh: 'Alta',
-    qualityBalanced: 'Equilibrada',
-    qualityReduced: 'Reduzida',
-    invalidCode: 'Códigos de sala têm oito letras ou números.',
-    invalidQr: 'Este QR code não é uma sala válida do PyDrop.',
-    notPyDropQr: 'Este QR code não é uma sala do PyDrop.',
-    cameraRequired: 'É necessário acesso à câmera para escanear o QR code da sala.',
-    confirmLeave: 'Uma transferência está em andamento. Sair mesmo assim?',
-    dismiss: 'Dispensar mensagem',
-    modeSend: 'Enviar',
-    modeReceive: 'Receber',
-    waitingForFile: 'Aguardando um arquivo',
-    waitingForFileBody: 'O outro dispositivo vai enviar para você.',
-    otherIsReceiving: 'O outro dispositivo está pronto para receber.',
-    otherIsSending: 'O outro dispositivo está pronto para enviar.',
-    bothReceiving: 'Os dois dispositivos estão no modo receber. Um de vocês precisa mudar para Enviar.',
-    receiveModeActive: 'Modo receber',
-    receiving: 'Recebendo',
-    received: 'Recebido',
-  }
-  return language.value === 'en' ? en : pt
-})
-
-const isMobileDevice = computed(() => /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(navigator.userAgent))
-const isPreparingBackend = computed(() => ['checking', 'waking_up', 'connecting_ws'].includes(serverStatus.value))
-const preparingLabel = computed(() => (entryMode.value === 'join' ? copy.value.joiningRoom : copy.value.creatingRoom))
-const fileLabel = computed(() => selectedFile.value?.name ?? copy.value.chooseOrDrag)
-const displayRoomCode = computed(() => formatRoomCode(roomCode.value))
-const normalizedJoinCode = computed(() => joinCode.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase())
-const canTransfer = computed(() =>
-  !!selectedFile.value
-  && !isTransferring.value
-  && direction.value === 'send'
-  && deviceConnectionStatus.value === 'connected',
+const isMobile = computed(() => /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(navigator.userAgent))
+const isPreparingBackend = computed(() =>
+  ['checking', 'waking_up', 'connecting_ws'].includes(serverStatus.value),
 )
-// Nobody can send when both sides are waiting to receive — worth calling out.
-const bothReceiving = computed(() => direction.value === 'receive' && remoteDirection.value === 'receive')
-// Tells the user what the other device is doing, and flags the one dead-end combination.
+const preparingLabel = computed(() =>
+  entryMode.value === 'join' ? copy.value.joiningRoom : copy.value.creatingRoom,
+)
+const fileLabel = computed(() => selectedFile.value?.name ?? copy.value.choose)
+const displayRoomCode = computed(() => formatRoomCode(roomCode.value))
+// The QR encodes the deep link the other device opens; RoomQr draws it.
+const joinUrl = computed(() => {
+  if (!roomCode.value) return ''
+  const base = import.meta.env.VITE_PUBLIC_APP_URL || 'https://pydrop.vercel.app'
+  const url = new URL(base)
+  url.search = ''
+  url.searchParams.set('room', roomCode.value)
+  return url.toString()
+})
+const normalizedJoinCode = computed(() => joinCode.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase())
+const canTransfer = computed(
+  () =>
+    !!selectedFile.value &&
+    !isTransferring.value &&
+    direction.value === 'send' &&
+    deviceConnectionStatus.value === 'connected',
+)
+const bothReceiving = computed(
+  () => direction.value === 'receive' && remoteDirection.value === 'receive',
+)
 const peerModeMessage = computed(() => {
   if (deviceConnectionStatus.value !== 'connected') return ''
   if (bothReceiving.value) return copy.value.bothReceiving
   return remoteDirection.value === 'receive' ? copy.value.otherIsReceiving : copy.value.otherIsSending
 })
-const statusMessage = computed(() => {
-  if (roomFull.value) return copy.value.roomFull
-  if (serverStatus.value === 'checking') return copy.value.checkingServer
-  if (serverStatus.value === 'waking_up') return copy.value.startingServer
-  if (serverStatus.value === 'connecting_ws') return copy.value.connectingWs
-  if (serverStatus.value === 'failed') return copy.value.unableToConnect
-  if (deviceConnectionStatus.value === 'connected') return copy.value.connectedBody
-  if (view.value === 'start') return copy.value.readyWhenYouAre
-  return copy.value.waiting
+/** What the connection field should be showing right now. */
+const connectionPhase = computed<'idle' | 'waiting' | 'linked'>(() => {
+  if (deviceConnectionStatus.value === 'connected') return 'linked'
+  if (view.value !== 'start' || isPreparingBackend.value) return 'waiting'
+  return 'idle'
 })
-const preparationTitle = computed(() => {
-  if (serverStatus.value === 'checking') return copy.value.checkingServer
-  if (serverStatus.value === 'waking_up') return copy.value.startingServer
-  if (serverStatus.value === 'connecting_ws') return copy.value.connectingWs
-  if (serverStatus.value === 'failed') return copy.value.unableToConnectTitle
-  return copy.value.serverReady
+const liveFlow = computed(() => {
+  if (isTransferring.value) return transferPercent.value / 100
+  if (isReceiving.value) return receivePercent.value / 100
+  return -1
 })
 
 function formatRoomCode(code: string) {
-  return code ? code.replace(/^(.{4})(.{4})$/, '$1-$2') : '....-....'
+  return code ? code.replace(/^(.{4})(.{4})$/, '$1-$2') : '••••-••••'
 }
 
 function setAppState(state: AppState) {
   appState.value = state
+  syncScene()
+}
+
+function showError(title: string, body: string, action?: AppError['action']) {
+  notice.value = { title, body, action }
+  window.clearTimeout(noticeTimer)
+  // Errors offering a recovery action stay until dismissed; plain ones time out.
+  if (!action) noticeTimer = window.setTimeout(() => { notice.value = null }, 7000)
+}
+
+function dismissNotice() {
+  window.clearTimeout(noticeTimer)
+  notice.value = null
+}
+
+function setLanguage() {
+  language.value = language.value === 'en' ? 'pt' : 'en'
+  document.documentElement.lang = language.value
+}
+
+function toggleImmersiveMode() {
+  immersiveMode.value = !immersiveMode.value
+  // Entering immersive while already connected replays the traversal.
+  if (immersiveMode.value && appState.value === 'connected') beginTraversal()
+  if (!immersiveMode.value && appState.value === 'entering-room') setAppState('connected')
+}
+
+function toggleReduceMotion() {
+  reduceMotion.value = !reduceMotion.value
+  syncScene()
 }
 
 function setDirection(mode: api.TransferMode) {
@@ -293,67 +161,62 @@ function setDirection(mode: api.TransferMode) {
   directTransfer?.setMode(mode)
 }
 
-function showNotice(message: string) {
-  notice.value = message
-  window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => { notice.value = '' }, 6000)
-}
+// ---------------------------------------------------------------- 3D lifecycle
 
-function dismissNotice() {
-  window.clearTimeout(noticeTimer)
-  notice.value = ''
-}
-
-function setLanguage() {
-  language.value = language.value === 'en' ? 'pt' : 'en'
-}
-
-function toggleImmersiveMode() {
-  immersiveMode.value = !immersiveMode.value
-  if (immersiveMode.value && appState.value === 'connected') setAppState('entering-room')
-  if (!immersiveMode.value && appState.value === 'entering-room') setAppState('connected')
-}
-
-function toggleReduceMotion() {
-  reduceMotion.value = !reduceMotion.value
-}
-
-async function createRoom() {
-  entryMode.value = 'create'
-  view.value = 'room'
-  setAppState('creating-room')
-  copyFeedback.value = ''
+function supportsWebGL() {
   try {
-    await prepareBackend()
-    const result = await api.createRoom()
-    roomCode.value = result.code
-    setAppState('waiting')
-    await nextTick()
-    await renderRoomQrCode()
-    connectToRoom()
+    const canvas = document.createElement('canvas')
+    return !!(canvas.getContext('webgl') || canvas.getContext('experimental-webgl'))
   } catch {
-    serverStatus.value = 'failed'
-    setAppState('error')
+    return false
   }
 }
 
-// Reconnects to the room we already have (whichever way we got it) instead of
-// silently minting a brand-new room code and stranding the other device.
-async function retryConnection() {
-  if (roomCode.value) {
-    setAppState('creating-room')
-    try {
-      await prepareBackend()
-      setAppState('waiting')
-      connectToRoom()
-    } catch {
-      serverStatus.value = 'failed'
-      setAppState('error')
-    }
+function syncScene() {
+  scene?.update({
+    state: appState.value,
+    quality: renderQuality.value,
+    reduceMotion: reduceMotion.value,
+    transferProgress: sceneTransferProgress,
+    transferDirection: direction.value,
+  })
+}
+
+async function mountScene() {
+  if (!immersiveMode.value || !hasWebGL.value || scene) return
+  await nextTick()
+  if (!sceneMount.value) return
+  // Three.js is ~600kB and only immersive mode needs it, so the standard flow
+  // never pays for it. Loaded on demand, when the user opts into the experience.
+  const { PyDropScene } = await import('./scene')
+  // The user may have left immersive mode while the chunk was in flight.
+  if (!immersiveMode.value || !sceneMount.value || scene) return
+  scene = new PyDropScene(
+    sceneMount.value,
+    () => { if (appState.value === 'initial') createRoom() },
+    (hovered) => { coreHovered.value = hovered },
+  )
+  syncScene()
+}
+
+function unmountScene() {
+  scene?.dispose()
+  scene = null
+  coreHovered.value = false
+}
+
+/** The authored moment: fly through the portal, then land inside the room. */
+function beginTraversal() {
+  window.clearTimeout(traversalTimer)
+  if (reduceMotion.value || !hasWebGL.value) {
+    setAppState('inside-room')
     return
   }
-  await createRoom()
+  setAppState('entering-room')
+  traversalTimer = window.setTimeout(() => setAppState('inside-room'), 2400)
 }
+
+// ------------------------------------------------------------------ room flow
 
 async function prepareBackend() {
   await api.ensureBackendReady((state, elapsedSeconds) => {
@@ -364,25 +227,52 @@ async function prepareBackend() {
   })
 }
 
+async function createRoom() {
+  if (isOffline.value) {
+    showError(copy.value.offline, copy.value.offlineBody)
+    return
+  }
+  entryMode.value = 'create'
+  view.value = 'room'
+  setAppState('creating-room')
+  copyFeedback.value = ''
+  dismissNotice()
+  try {
+    await prepareBackend()
+    const result = await api.createRoom()
+    roomCode.value = result.code
+    setAppState('waiting')
+    connectToRoom()
+  } catch {
+    serverStatus.value = 'failed'
+    setAppState('error')
+    showError(copy.value.unableToConnectTitle, copy.value.unableToConnectBody, 'retry')
+  }
+}
+
 async function joinRoomByCode(rawCode: string) {
   const code = rawCode.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
-  if (!code || !/^[A-Z0-9]{8}$/.test(code)) {
-    if (code) showNotice(copy.value.invalidCode)
+  if (!/^[A-Z0-9]{8}$/.test(code)) {
+    if (code) showError(copy.value.invalidCode, copy.value.codeLabel)
+    return
+  }
+  if (isOffline.value) {
+    showError(copy.value.offline, copy.value.offlineBody)
     return
   }
   entryMode.value = 'join'
   roomCode.value = code
   view.value = 'room'
   setAppState('creating-room')
+  dismissNotice()
   try {
     await prepareBackend()
     setAppState('waiting')
     connectToRoom()
-    await nextTick()
-    await renderRoomQrCode()
   } catch {
     serverStatus.value = 'failed'
     setAppState('error')
+    showError(copy.value.unableToConnectTitle, copy.value.unableToConnectBody, 'retry')
   }
 }
 
@@ -390,60 +280,31 @@ function submitJoinCode() {
   joinRoomByCode(joinCode.value)
 }
 
-async function copyRoomCode() {
-  if (!roomCode.value) return
-  try {
-    await navigator.clipboard.writeText(roomCode.value)
-    copyFeedback.value = copy.value.copied
-  } catch {
-    copyFeedback.value = roomCode.value
-  }
-  window.setTimeout(() => { copyFeedback.value = '' }, 2200)
-}
-
-async function startQrScanner() {
-  stopQrScanner()
-  isScanningQr.value = true
+async function expandJoin() {
+  isJoinExpanded.value = !isJoinExpanded.value
+  if (!isJoinExpanded.value) return
   await nextTick()
-  if (!qrVideo.value) return
-  qrScanner = new QrScanner(qrVideo.value, (result) => {
-    const value = typeof result === 'string' ? result : result.data
-    try {
-      const scannedUrl = new URL(value)
-      const code = scannedUrl.searchParams.get('room')
-      if (!code) throw new Error(copy.value.notPyDropQr)
-      stopQrScanner()
-      joinRoomByCode(code)
-    } catch {
-      showNotice(copy.value.invalidQr)
-    }
-  }, { highlightScanRegion: true, highlightCodeOutline: true })
-  try {
-    await qrScanner.start()
-  } catch {
-    stopQrScanner()
-    showNotice(copy.value.cameraRequired)
+  joinInput.value?.focus()
+}
+
+// Reconnects to the room we already have rather than minting a new code and
+// stranding the other device.
+async function retryConnection() {
+  dismissNotice()
+  if (!roomCode.value) {
+    await createRoom()
+    return
   }
-}
-
-function stopQrScanner() {
-  qrScanner?.stop()
-  qrScanner?.destroy()
-  qrScanner = null
-  isScanningQr.value = false
-}
-
-async function renderRoomQrCode() {
-  if (!qrCanvas.value || !roomCode.value) return
-  const publicAppUrl = import.meta.env.VITE_PUBLIC_APP_URL || 'https://pydrop.vercel.app'
-  const joinUrl = new URL(publicAppUrl)
-  joinUrl.search = ''
-  joinUrl.searchParams.set('room', roomCode.value)
-  await QRCode.toCanvas(qrCanvas.value, joinUrl.toString(), {
-    width: 156,
-    margin: 2,
-    color: { dark: '#0B0F12', light: '#F4F7F2' },
-  })
+  setAppState('creating-room')
+  try {
+    await prepareBackend()
+    setAppState('waiting')
+    connectToRoom()
+  } catch {
+    serverStatus.value = 'failed'
+    setAppState('error')
+    showError(copy.value.unableToConnectTitle, copy.value.unableToConnectBody, 'retry')
+  }
 }
 
 function connectToRoom() {
@@ -462,16 +323,18 @@ function connectToRoom() {
       if (sessions > 1) handleDevicesConnected(true)
     },
     onSignal: (message) => {
-      directTransfer?.handleSignal(message).catch((error) => showNotice(String(error)))
+      directTransfer?.handleSignal(message).catch(() =>
+        showError(copy.value.transferFailed, copy.value.transferFailedBody),
+      )
     },
     onDisconnect: () => {
-      // A previous socket we've since replaced — ignore its stale disconnect event.
       if (myGeneration !== connectionGeneration) return
       deviceConnectionStatus.value = 'disconnected'
       if (roomFull.value) return
       if (reconnectAttempts >= 3) {
         serverStatus.value = 'failed'
         setAppState('error')
+        showError(copy.value.connectionLostTitle, copy.value.connectionLostBody, 'retry')
         return
       }
       reconnectAttempts += 1
@@ -485,6 +348,7 @@ function connectToRoom() {
         serverStatus.value = 'failed'
         setAppState('error')
         window.clearTimeout(reconnectTimer)
+        showError(copy.value.roomFull, copy.value.roomFullBody, 'newRoom')
       }
     },
   })
@@ -496,13 +360,8 @@ function handleDevicesConnected(initiator: boolean) {
   deviceConnectionStatus.value = 'connecting'
   serverStatus.value = 'connected'
   reconnectAttempts = 0
-  setAppState(immersiveMode.value ? 'entering-room' : 'connected')
-  window.clearTimeout(roomEntryTimer)
-  if (immersiveMode.value && !reduceMotion.value) {
-    roomEntryTimer = window.setTimeout(() => setAppState('inside-room'), 1900)
-  } else if (immersiveMode.value) {
-    setAppState('inside-room')
-  }
+  if (immersiveMode.value) beginTraversal()
+  else setAppState('connected')
 }
 
 function setupDirectTransfer(initiator: boolean) {
@@ -511,23 +370,22 @@ function setupDirectTransfer(initiator: boolean) {
     (message) => roomConnection?.send(message),
     () => {
       deviceConnectionStatus.value = 'connected'
-      if (appState.value === 'connected') setAppState(immersiveMode.value ? 'inside-room' : 'connected')
+      if (appState.value === 'connected' && immersiveMode.value) beginTraversal()
     },
     (file, blob) => {
-      roomFiles.value = [...roomFiles.value, file]
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
       link.download = file.name
       link.click()
-      // Give the browser a moment to hand the blob off before we revoke it —
-      // revoking synchronously right after click() is flaky on some mobile browsers.
+      // Give the browser a moment to take the blob before revoking it; revoking
+      // synchronously after click() is flaky on some mobile browsers.
       window.clearTimeout(pendingDownloadUrl)
       pendingDownloadUrl = window.setTimeout(() => URL.revokeObjectURL(url), 4000)
       isReceiving.value = false
       receivePercent.value = 100
       incomingName.value = file.name
-      // Don't claim the whole screen is "completed" while our own send is still running.
+      // Don't declare the whole screen complete while our own send is still running.
       if (!isTransferring.value) {
         transferComplete.value = true
         setAppState('completed')
@@ -537,12 +395,15 @@ function setupDirectTransfer(initiator: boolean) {
       if (mode === 'receive') {
         isReceiving.value = true
         receivePercent.value = Math.round(progress * 100)
+        sceneTransferProgress = progress
+        syncScene()
         return
       }
       transferPercent.value = Math.round(progress * 100)
       sceneTransferProgress = progress
+      syncScene()
     },
-    (message) => showNotice(message),
+    () => showError(copy.value.transferFailed, copy.value.transferFailedBody),
     () => {
       if (view.value === 'connected') {
         isTransferring.value = false
@@ -552,93 +413,106 @@ function setupDirectTransfer(initiator: boolean) {
     (mode) => { remoteDirection.value = mode },
   )
   directTransfer.setMode(direction.value)
-  directTransfer.start(initiator).catch((error) => showNotice(String(error)))
+  directTransfer.start(initiator).catch(() =>
+    showError(copy.value.unableToConnectTitle, copy.value.unableToConnectBody, 'retry'),
+  )
 }
 
-function reset(force = false) {
-  if (!force && isTransferring.value) {
-    if (!window.confirm(copy.value.confirmLeave)) return
-  }
-  stopQrScanner()
-  dismissNotice()
-  connectionGeneration += 1
-  window.clearTimeout(reconnectTimer)
-  window.clearTimeout(roomEntryTimer)
-  window.clearTimeout(pendingDownloadUrl)
-  roomConnection?.disconnect()
-  directTransfer?.close()
-  roomConnection = null
-  directTransfer = null
-  view.value = 'start'
-  setAppState('initial')
-  direction.value = 'send'
-  remoteDirection.value = 'send'
-  selectedFile.value = null
-  activeTransferName.value = ''
-  transferComplete.value = false
-  isTransferring.value = false
-  transferPercent.value = 0
-  receivePercent.value = 0
-  isReceiving.value = false
-  incomingName.value = ''
-  sceneTransferProgress = -1
-  deviceConnectionStatus.value = 'connecting'
-  serverStatus.value = 'idle'
-  serverElapsedSeconds.value = 0
-  roomFull.value = false
-  reconnectAttempts = 0
-  copyFeedback.value = ''
-  roomCode.value = ''
-  joinCode.value = ''
-  entryMode.value = null
-  isJoinExpanded.value = false
-  isDragOver.value = false
-  roomFiles.value = []
-}
+// ------------------------------------------------------------------ room code
 
-async function prepareOnStartup() {
+async function copyRoomCode() {
+  if (!roomCode.value) return
   try {
-    await prepareBackend()
+    await navigator.clipboard.writeText(roomCode.value)
+    copyFeedback.value = copy.value.copied
   } catch {
-    serverStatus.value = 'failed'
-    setAppState('error')
+    // Clipboard blocked (insecure context or denied) — show the code to copy by hand.
+    copyFeedback.value = roomCode.value
+  }
+  window.setTimeout(() => { copyFeedback.value = '' }, 2200)
+}
+
+async function startQrScanner() {
+  stopQrScanner()
+  isScanningQr.value = true
+  await nextTick()
+  if (!qrVideo.value) return
+  qrScanner = new QrScanner(
+    qrVideo.value,
+    (result) => {
+      const value = typeof result === 'string' ? result : result.data
+      try {
+        const code = new URL(value).searchParams.get('room')
+        if (!code) throw new Error('not a room')
+        stopQrScanner()
+        joinRoomByCode(code)
+      } catch {
+        showError(copy.value.invalidQr, copy.value.codeLabel)
+      }
+    },
+    { highlightScanRegion: true, highlightCodeOutline: true },
+  )
+  try {
+    await qrScanner.start()
+  } catch {
+    stopQrScanner()
+    showError(copy.value.cameraRequired, copy.value.cameraRequiredBody)
   }
 }
 
-// Shared by the file input and drag-and-drop so both paths validate identically.
+function stopQrScanner() {
+  qrScanner?.stop()
+  qrScanner?.destroy()
+  qrScanner = null
+  isScanningQr.value = false
+}
+
+// --------------------------------------------------------------------- files
+
 function acceptFile(file: File | null) {
   if (file) {
-    const validationError = api.validateTransferFile(file)
-    if (validationError) {
+    const error = api.validateTransferFile(file)
+    if (error) {
       selectedFile.value = null
-      showNotice(validationError)
+      // The only validation users realistically hit is the size ceiling.
+      if (file.size > api.MAX_FILE_SIZE_BYTES) {
+        showError(copy.value.fileTooLarge, copy.value.fileTooLargeBody)
+      } else {
+        showError(copy.value.transferFailed, error)
+      }
       return
     }
   }
   selectedFile.value = file
   transferComplete.value = false
   transferPercent.value = 0
-  setAppState(file ? 'file-ready' : 'selecting-file')
+  setAppState(file ? 'file-ready' : immersiveMode.value ? 'inside-room' : 'connected')
 }
 
 function onFileSelected(event: Event) {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0] ?? null
-  acceptFile(file)
+  acceptFile(input.files?.[0] ?? null)
   if (!selectedFile.value) input.value = ''
 }
 
-function onDropZoneDragOver(event: DragEvent) {
+function clearFile() {
+  selectedFile.value = null
+  transferPercent.value = 0
+  transferComplete.value = false
+  setAppState(immersiveMode.value ? 'inside-room' : 'connected')
+}
+
+function onDragOver(event: DragEvent) {
   if (isTransferring.value) return
   event.preventDefault()
   isDragOver.value = true
 }
 
-function onDropZoneDragLeave() {
+function onDragLeave() {
   isDragOver.value = false
 }
 
-function onDropZoneDrop(event: DragEvent) {
+function onDrop(event: DragEvent) {
   event.preventDefault()
   isDragOver.value = false
   if (isTransferring.value) return
@@ -659,719 +533,1192 @@ async function startTransfer() {
     transferComplete.value = true
     transferPercent.value = 100
     setAppState('completed')
-  } catch (error) {
+  } catch {
     setAppState('error')
-    showNotice(error instanceof Error ? error.message : String(error))
+    showError(copy.value.transferFailed, copy.value.transferFailedBody)
   } finally {
     isTransferring.value = false
   }
 }
 
-function supportsWebGL() {
-  try {
-    const canvas = document.createElement('canvas')
-    return !!(canvas.getContext('webgl') || canvas.getContext('experimental-webgl'))
-  } catch {
-    return false
-  }
-}
-
-function material(color: number, roughness = 0.7) {
-  return new THREE.MeshStandardMaterial({ color, roughness, metalness: 0.08 })
-}
-
-function addBox(parent: THREE.Object3D, size: [number, number, number], position: [number, number, number], color: number) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material(color))
-  mesh.position.set(...position)
-  parent.add(mesh)
-  return mesh
-}
-
-// Recursively frees GPU resources (geometry, material, textures) for everything in a subtree.
-// Without this, recreating the scene on every quality/view change leaks VRAM indefinitely.
-function disposeObject3D(root: THREE.Object3D | null) {
-  if (!root) return
-  root.traverse((child) => {
-    const mesh = child as THREE.Mesh | THREE.Points
-    const geometry = (mesh as THREE.Mesh).geometry as THREE.BufferGeometry | undefined
-    geometry?.dispose()
-    const mat = (mesh as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined
-    const materials = Array.isArray(mat) ? mat : mat ? [mat] : []
-    materials.forEach((m) => {
-      Object.values(m).forEach((value) => {
-        if (value && typeof value === 'object' && 'isTexture' in value) (value as THREE.Texture).dispose()
-      })
-      m.dispose()
-    })
-  })
-}
-
-function createThreeScene() {
-  if (!threeMount.value || renderer || !hasWebGL.value) return
-  const width = threeMount.value.clientWidth
-  const height = threeMount.value.clientHeight
-  scene = new THREE.Scene()
-  scene.fog = new THREE.Fog(0x0b0f12, 8, 22)
-  camera = new THREE.PerspectiveCamera(44, width / height, 0.1, 50)
-  camera.position.set(0, 2.4, 8.6)
-
-  renderer = new THREE.WebGLRenderer({ antialias: renderQuality.value !== 'reduced', alpha: true })
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, renderQuality.value === 'high' ? 2 : 1.35))
-  renderer.setSize(width, height)
-  renderer.shadowMap.enabled = renderQuality.value !== 'reduced'
-  threeMount.value.appendChild(renderer.domElement)
-
-  scene.add(new THREE.HemisphereLight(0xb7f34a, 0x12181c, 1.1))
-  const keyLight = new THREE.DirectionalLight(0xf4f7f2, 2.2)
-  keyLight.position.set(-3, 6, 5)
-  scene.add(keyLight)
-  const portalLight = new THREE.PointLight(0xb7f34a, 4.8, 8)
-  portalLight.position.set(0, 2.1, 0.4)
-  scene.add(portalLight)
-
-  const room = new THREE.Group()
-  scene.add(room)
-  addBox(room, [12, 0.16, 9], [0, 0, 0], 0x1a2328)
-  addBox(room, [12, 5.2, 0.16], [0, 2.6, -3.7], 0x12181c)
-  addBox(room, [0.16, 5.2, 9], [-5.9, 2.6, 0], 0x151d21)
-  addBox(room, [0.16, 5.2, 9], [5.9, 2.6, 0], 0x101518)
-
-  const table = new THREE.Group()
-  table.position.set(-2.7, 0, 0.55)
-  addBox(table, [3.4, 0.18, 1.25], [0, 1.55, 0], 0x273238)
-  ;[-1.35, 1.35].forEach((x) => addBox(table, [0.12, 1.5, 0.12], [x, 0.78, 0], 0x1a2328))
-  room.add(table)
-
-  const computer = new THREE.Group()
-  computer.position.set(-2.7, 1.68, 0.48)
-  addBox(computer, [1.65, 1, 0.1], [0, 0.58, 0], 0x0b0f12)
-  addBox(computer, [1.38, 0.76, 0.03], [0, 0.58, 0.07], 0x203328)
-  addBox(computer, [0.12, 0.52, 0.12], [0, 0.14, 0], 0x9aa6a8)
-  addBox(computer, [0.72, 0.04, 0.32], [0, -0.12, 0.08], 0x9aa6a8)
-  room.add(computer)
-
-  const phone = new THREE.Group()
-  phone.position.set(3.1, 0.96, 0.02)
-  addBox(phone, [0.62, 1.38, 0.11], [0, 0.7, 0], 0x0b0f12)
-  addBox(phone, [0.46, 1, 0.02], [0, 0.7, 0.07], 0x3a211f)
-  phone.rotation.z = -0.12
-  room.add(phone)
-
-  const lamp = new THREE.Group()
-  lamp.position.set(1.8, 0, -0.4)
-  addBox(lamp, [0.08, 2.5, 0.08], [0, 1.2, 0], 0x273238)
-  addBox(lamp, [0.9, 0.08, 0.9], [0, 2.5, 0], 0xff6b5e)
-  room.add(lamp)
-
-  roomPortal = new THREE.Group()
-  roomPortal.position.set(0, 2.1, 0.08)
-  const lime = new THREE.MeshBasicMaterial({ color: 0xb7f34a, transparent: true, opacity: 0.78, side: THREE.DoubleSide })
-  const coral = new THREE.MeshBasicMaterial({ color: 0xff6b5e, transparent: true, opacity: 0.62, side: THREE.DoubleSide })
-  const portalA = new THREE.Mesh(new THREE.TorusGeometry(0.76, 0.055, 16, 72), lime)
-  const portalB = new THREE.Mesh(new THREE.TorusGeometry(0.76, 0.055, 16, 72), coral)
-  portalA.position.x = -0.34
-  portalB.position.x = 0.34
-  portalA.rotation.y = 0.4
-  portalB.rotation.y = -0.4
-  roomPortal.add(portalA, portalB)
-  scene.add(roomPortal)
-
-  transferObject = new THREE.Mesh(
-    new THREE.BoxGeometry(0.36, 0.48, 0.035),
-    new THREE.MeshBasicMaterial({ color: 0xf4f7f2, transparent: true, opacity: 0.9 }),
-  )
-  transferObject.visible = false
-  scene.add(transferObject)
-
-  resizeObserver = new ResizeObserver(() => resizeThreeScene())
-  resizeObserver.observe(threeMount.value)
-  animationFrame = requestAnimationFrame(animateThreeScene)
-}
-
-function resizeThreeScene() {
-  if (!renderer || !camera || !threeMount.value) return
-  camera.aspect = threeMount.value.clientWidth / threeMount.value.clientHeight
-  camera.updateProjectionMatrix()
-  renderer.setSize(threeMount.value.clientWidth, threeMount.value.clientHeight)
-}
-
-function animateThreeScene(time: number) {
-  if (!renderer || !scene || !camera) return
-  const seconds = time * 0.001
-  if (!reduceMotion.value) {
-    cameraEntry = Math.min(cameraEntry + 0.01, 1)
-    const entryEase = 1 - Math.pow(1 - cameraEntry, 3)
-    camera.position.z = THREE.MathUtils.lerp(8.6, appState.value === 'entering-room' ? 4.6 : 6.2, entryEase)
-    camera.position.x = Math.sin(seconds * 0.22) * 0.14
-    camera.position.y = 2.35 + Math.cos(seconds * 0.18) * 0.08
-  }
-  camera.lookAt(0, 1.65, -0.45)
-  if (roomPortal) {
-    roomPortal.rotation.z = seconds * 0.18
-    const activeScale = appState.value === 'transferring' ? 1.14 : appState.value === 'completed' ? 1.04 : 1
-    roomPortal.scale.setScalar(activeScale + (reduceMotion.value ? 0 : Math.sin(seconds * 2.2) * 0.025))
-  }
-  if (transferObject) {
-    const active = appState.value === 'file-ready' || appState.value === 'transferring' || appState.value === 'completed'
-    transferObject.visible = active
-    const progress = appState.value === 'transferring' ? Math.min(Math.max(sceneTransferProgress, 0), 1) : appState.value === 'completed' ? 1 : 0
-    transferObject.position.set(THREE.MathUtils.lerp(-2.7, 3.08, progress), 2.2 + Math.sin(progress * Math.PI) * 0.6, 0.2)
-    transferObject.rotation.y += reduceMotion.value ? 0 : 0.025
-  }
-  renderer.render(scene, camera)
-  animationFrame = requestAnimationFrame(animateThreeScene)
-}
-
-function disposeThreeScene() {
-  cancelAnimationFrame(animationFrame)
-  resizeObserver?.disconnect()
-  disposeObject3D(scene)
-  renderer?.dispose()
-  renderer?.domElement.remove()
-  renderer = null
-  scene = null
-  camera = null
-  roomPortal = null
-  transferObject = null
-}
-
-function createSpaceScene() {
-  if (!spaceMount.value || spaceRenderer || !hasWebGL.value) return
-  const width = spaceMount.value.clientWidth
-  const height = spaceMount.value.clientHeight
-  spaceScene = new THREE.Scene()
-  spaceScene.fog = new THREE.FogExp2(0x0b0f12, 0.04)
-  spaceCamera = new THREE.PerspectiveCamera(54, width / height, 0.1, 100)
-  spaceCamera.position.set(0, 0.2, 8)
-
-  spaceRenderer = new THREE.WebGLRenderer({ antialias: renderQuality.value !== 'reduced', alpha: true })
-  spaceRenderer.setPixelRatio(Math.min(window.devicePixelRatio, renderQuality.value === 'high' ? 2 : 1.25))
-  spaceRenderer.setSize(width, height)
-  spaceMount.value.appendChild(spaceRenderer.domElement)
-
-  spaceScene.add(new THREE.AmbientLight(0x9aa6a8, 0.45))
-  const coreLight = new THREE.PointLight(0xb7f34a, 7, 17)
-  coreLight.position.set(0, 0.15, 1.5)
-  spaceScene.add(coreLight)
-  const destinationLight = new THREE.PointLight(0xff6b5e, 3.2, 12)
-  destinationLight.position.set(3.2, -0.4, -4)
-  spaceScene.add(destinationLight)
-
-  const count = renderQuality.value === 'high' ? 1300 : renderQuality.value === 'balanced' ? 760 : 330
-  const starPositions = new Float32Array(count * 3)
-  const starColors = new Float32Array(count * 3)
-  for (let index = 0; index < count; index += 1) {
-    const radius = 3 + Math.random() * 22
-    const angle = Math.random() * Math.PI * 2
-    starPositions[index * 3] = Math.cos(angle) * radius
-    starPositions[index * 3 + 1] = (Math.random() - 0.5) * 12
-    starPositions[index * 3 + 2] = -Math.random() * 28
-    const warm = Math.random() > 0.82
-    starColors[index * 3] = warm ? 1 : 0.72
-    starColors[index * 3 + 1] = warm ? 0.42 : 0.95
-    starColors[index * 3 + 2] = warm ? 0.36 : 0.62
-  }
-  const starGeometry = new THREE.BufferGeometry()
-  starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3))
-  starGeometry.setAttribute('color', new THREE.BufferAttribute(starColors, 3))
-  spaceStars = new THREE.Points(starGeometry, new THREE.PointsMaterial({ size: 0.032, vertexColors: true, transparent: true, opacity: 0.86, sizeAttenuation: true }))
-  spaceScene.add(spaceStars)
-
-  const particleCount = renderQuality.value === 'reduced' ? 80 : 180
-  const particlePositions = new Float32Array(particleCount * 3)
-  for (let index = 0; index < particleCount; index += 1) {
-    particlePositions[index * 3] = (Math.random() - 0.5) * 3.8
-    particlePositions[index * 3 + 1] = (Math.random() - 0.5) * 2.3
-    particlePositions[index * 3 + 2] = (Math.random() - 0.5) * 2.4
-  }
-  const particleGeometry = new THREE.BufferGeometry()
-  particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3))
-  spaceParticles = new THREE.Points(particleGeometry, new THREE.PointsMaterial({ color: 0xb7f34a, size: 0.026, transparent: true, opacity: 0.5 }))
-  spaceScene.add(spaceParticles)
-
-  spaceCore = new THREE.Group()
-  const lime = new THREE.MeshStandardMaterial({ color: 0xb7f34a, emissive: 0x48671a, emissiveIntensity: 1.7, roughness: 0.24, metalness: 0.42 })
-  const coral = new THREE.MeshStandardMaterial({ color: 0xff6b5e, emissive: 0x59231f, emissiveIntensity: 1.1, roughness: 0.32, metalness: 0.3 })
-  const leftLoop = new THREE.Mesh(new THREE.TorusGeometry(0.82, 0.075, 18, 72), lime)
-  const rightLoop = new THREE.Mesh(new THREE.TorusGeometry(0.82, 0.075, 18, 72), coral)
-  leftLoop.position.x = -0.36
-  rightLoop.position.x = 0.36
-  leftLoop.rotation.y = 0.52
-  rightLoop.rotation.y = -0.52
-  const passage = new THREE.Mesh(new THREE.TorusGeometry(0.38, 0.026, 12, 48), new THREE.MeshBasicMaterial({ color: 0xf4f7f2, transparent: true, opacity: 0.42 }))
-  passage.rotation.x = Math.PI / 2
-  spaceCore.add(leftLoop, rightLoop, passage)
-  spaceScene.add(spaceCore)
-
-  spaceRemote = new THREE.Mesh(new THREE.SphereGeometry(0.11, 24, 24), new THREE.MeshBasicMaterial({ color: 0xff6b5e }))
-  spaceRemote.position.set(4.5, -0.6, -6)
-  spaceScene.add(spaceRemote)
-
-  spaceStartedAt = performance.now()
-  spaceResizeObserver = new ResizeObserver(() => resizeSpaceScene())
-  spaceResizeObserver.observe(spaceMount.value)
-  spaceMount.value.addEventListener('pointermove', onSpacePointerMove)
-  spaceMount.value.addEventListener('pointerleave', onSpacePointerLeave)
-  spaceMount.value.addEventListener('pointerdown', onSpacePointerDown)
-  spaceAnimationFrame = requestAnimationFrame(animateSpaceScene)
-}
-
-function onSpacePointerMove(event: PointerEvent) {
-  if (!spaceMount.value || !spaceCamera || !spaceCore) return
-  const rect = spaceMount.value.getBoundingClientRect()
-  spaceTargetMouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
-  spaceTargetMouse.y = -(((event.clientY - rect.top) / rect.height) * 2 - 1)
-  spacePointer.set(spaceTargetMouse.x, spaceTargetMouse.y)
-  spaceRaycaster.setFromCamera(spacePointer, spaceCamera)
-  coreHovered = spaceRaycaster.intersectObjects(spaceCore.children, true).length > 0
-  spaceMount.value.classList.toggle('is-core-hovered', coreHovered)
-}
-
-function onSpacePointerDown() {
-  if (view.value === 'start' && coreHovered && !isPreparingBackend.value && !isJoinExpanded.value) createRoom()
-}
-
-function onSpacePointerLeave() {
-  spaceTargetMouse = { x: 0, y: 0 }
-  coreHovered = false
-  spaceMount.value?.classList.remove('is-core-hovered')
-}
-
-function resizeSpaceScene() {
-  if (!spaceRenderer || !spaceCamera || !spaceMount.value) return
-  spaceCamera.aspect = spaceMount.value.clientWidth / spaceMount.value.clientHeight
-  spaceCamera.updateProjectionMatrix()
-  spaceRenderer.setSize(spaceMount.value.clientWidth, spaceMount.value.clientHeight)
-}
-
-function animateSpaceScene(time: number) {
-  if (!spaceRenderer || !spaceScene || !spaceCamera) return
-  const elapsed = (time - spaceStartedAt) * 0.001
-  const motion = !reduceMotion.value
-  spaceMouse.x += (spaceTargetMouse.x - spaceMouse.x) * 0.035
-  spaceMouse.y += (spaceTargetMouse.y - spaceMouse.y) * 0.035
-  if (motion) {
-    const entering = appState.value === 'entering-room'
-    spaceCamera.position.x = spaceMouse.x * 0.38 + Math.sin(elapsed * 0.16) * 0.08
-    spaceCamera.position.y = 0.24 + spaceMouse.y * 0.18 + Math.cos(elapsed * 0.2) * 0.05
-    spaceCamera.position.z = THREE.MathUtils.lerp(spaceCamera.position.z, entering ? 3.7 : 8, 0.02)
-  }
-  spaceCamera.lookAt(0, 0.05, -1.5)
-  if (spaceStars && motion) spaceStars.rotation.y = elapsed * 0.006
-  if (spaceParticles && motion) {
-    spaceParticles.rotation.z = elapsed * (appState.value === 'creating-room' ? 0.32 : 0.08)
-    spaceParticles.scale.setScalar(appState.value === 'creating-room' ? 0.72 + Math.sin(elapsed * 4) * 0.08 : 1)
-  }
-  if (spaceCore) {
-    const active = coreHovered || appState.value !== 'initial'
-    const targetScale = active ? 1.12 : 1
-    spaceCore.scale.setScalar(targetScale + (motion ? Math.sin(elapsed * 2.2) * 0.035 : 0))
-    if (motion) {
-      spaceCore.rotation.x = Math.sin(elapsed * 0.4) * 0.12
-      spaceCore.rotation.y = elapsed * 0.22
-    }
-  }
-  if (spaceRemote) {
-    const connected = ['connected', 'entering-room', 'inside-room', 'file-ready', 'transferring', 'completed'].includes(appState.value)
-    const waiting = appState.value === 'waiting'
-    spaceRemote.visible = connected || waiting
-    const targetX = connected ? 1.65 : 4.5
-    const targetZ = connected ? -2.2 : -6
-    spaceRemote.position.x = THREE.MathUtils.lerp(spaceRemote.position.x, targetX, 0.025)
-    spaceRemote.position.z = THREE.MathUtils.lerp(spaceRemote.position.z, targetZ, 0.025)
-    spaceRemote.scale.setScalar(connected ? 1.6 : 1)
-  }
-  spaceRenderer.render(spaceScene, spaceCamera)
-  spaceAnimationFrame = requestAnimationFrame(animateSpaceScene)
-}
-
-function disposeSpaceScene() {
-  cancelAnimationFrame(spaceAnimationFrame)
-  spaceResizeObserver?.disconnect()
-  if (spaceMount.value) {
-    spaceMount.value.removeEventListener('pointermove', onSpacePointerMove)
-    spaceMount.value.removeEventListener('pointerleave', onSpacePointerLeave)
-    spaceMount.value.removeEventListener('pointerdown', onSpacePointerDown)
-  }
-  disposeObject3D(spaceScene)
-  spaceRenderer?.dispose()
-  spaceRenderer?.domElement.remove()
-  spaceRenderer = null
-  spaceScene = null
-  spaceCamera = null
-  spaceCore = null
-  spaceRemote = null
-  spaceStars = null
-  spaceParticles = null
-}
-
-watch([view, immersiveMode, renderQuality], async () => {
-  disposeThreeScene()
-  disposeSpaceScene()
-  if (!immersiveMode.value) return
-  await nextTick()
-  if (view.value === 'connected') {
-    cameraEntry = 0
-    createThreeScene()
-  } else {
-    createSpaceScene()
-  }
-})
-
-watch(roomCode, async () => {
-  await nextTick()
-  await renderRoomQrCode()
-})
-
-watch(isTransferring, (transferring) => {
-  if (transferring) sceneTransferProgress = 0
-})
-
-onBeforeUnmount(disposeThreeScene)
-onBeforeUnmount(disposeSpaceScene)
-onBeforeUnmount(() => {
+function reset(force = false) {
+  if (!force && isTransferring.value && !window.confirm(copy.value.confirmLeave)) return
   stopQrScanner()
+  dismissNotice()
+  connectionGeneration += 1
+  window.clearTimeout(reconnectTimer)
+  window.clearTimeout(traversalTimer)
+  window.clearTimeout(pendingDownloadUrl)
   roomConnection?.disconnect()
   directTransfer?.close()
-  window.clearTimeout(reconnectTimer)
-  window.clearTimeout(roomEntryTimer)
-  window.clearTimeout(pendingDownloadUrl)
-  window.clearTimeout(noticeTimer)
+  roomConnection = null
+  directTransfer = null
+  view.value = 'start'
+  setAppState('initial')
+  direction.value = 'send'
+  remoteDirection.value = 'send'
+  selectedFile.value = null
+  activeTransferName.value = ''
+  incomingName.value = ''
+  transferComplete.value = false
+  isTransferring.value = false
+  isReceiving.value = false
+  transferPercent.value = 0
+  receivePercent.value = 0
+  sceneTransferProgress = -1
+  deviceConnectionStatus.value = 'connecting'
+  serverStatus.value = 'idle'
+  serverElapsedSeconds.value = 0
+  roomFull.value = false
+  reconnectAttempts = 0
+  copyFeedback.value = ''
+  roomCode.value = ''
+  joinCode.value = ''
+  entryMode.value = null
+  isJoinExpanded.value = false
+  isDragOver.value = false
+}
+
+function handleNoticeAction(action: AppError['action']) {
+  if (action === 'retry') retryConnection()
+  if (action === 'newRoom') {
+    reset(true)
+    createRoom()
+  }
+}
+
+// ------------------------------------------------------------------ lifecycle
+
+watch([immersiveMode, hasWebGL], () => {
+  unmountScene()
+  mountScene()
 })
+
+watch(renderQuality, syncScene)
+
+
+const handleOnline = () => { isOffline.value = false }
+const handleOffline = () => { isOffline.value = true }
 
 onMounted(() => {
   hasWebGL.value = supportsWebGL()
   reduceMotion.value = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  const roomCodeFromUrl = new URLSearchParams(window.location.search).get('room')
-  if (roomCodeFromUrl) joinRoomByCode(roomCodeFromUrl)
-  else prepareOnStartup()
+  isOffline.value = !navigator.onLine
+  document.documentElement.lang = language.value
+  window.addEventListener('online', handleOnline)
+  window.addEventListener('offline', handleOffline)
+  // Phones are the device that scans, so start them at reduced quality.
+  if (isMobile.value) renderQuality.value = 'reduced'
+
+  const roomFromUrl = new URLSearchParams(window.location.search).get('room')
+  if (roomFromUrl) joinRoomByCode(roomFromUrl)
+  else prepareBackend().catch(() => { serverStatus.value = 'failed' })
+})
+
+onBeforeUnmount(() => {
+  unmountScene()
+  stopQrScanner()
+  roomConnection?.disconnect()
+  directTransfer?.close()
+  window.removeEventListener('online', handleOnline)
+  window.removeEventListener('offline', handleOffline)
+  window.clearTimeout(reconnectTimer)
+  window.clearTimeout(traversalTimer)
+  window.clearTimeout(pendingDownloadUrl)
+  window.clearTimeout(noticeTimer)
 })
 </script>
 
 <template>
-  <main class="app-shell" :class="{ 'is-immersive': immersiveMode }">
+  <div class="shell" :class="{ immersive: immersiveMode }">
+    <!-- The 3D world sits behind everything and fills the viewport in immersive mode. -->
+    <div
+      v-if="immersiveMode && hasWebGL"
+      ref="sceneMount"
+      class="world"
+      :class="{ interactive: coreHovered }"
+      aria-hidden="true"
+    ></div>
+
     <header class="topbar">
-      <button class="brand" type="button" @click="reset()" aria-label="PyDrop home">
-        <img class="brand-symbol" src="/pydrop-icon-192.png" alt="" aria-hidden="true" />
-        <span>PyDrop</span>
+      <button class="brand" type="button" @click="reset()">
+        <PortalMark :size="30" />
+        <span class="wordmark">PyDrop</span>
+        <span class="visually-hidden">— {{ copy.tagline }}</span>
       </button>
-      <div class="topbar-actions">
-        <button class="text-control" type="button" @click="setLanguage">{{ language.toUpperCase() }}</button>
-        <button v-if="immersiveMode" class="text-control" type="button" :aria-pressed="reduceMotion" @click="toggleReduceMotion">
-          {{ reduceMotion ? copy.motionReduced : copy.reduceMotion }}
+
+      <div class="controls">
+        <button class="chip" type="button" :aria-label="copy.language" @click="setLanguage">
+          {{ language.toUpperCase() }}
         </button>
-        <label v-if="immersiveMode" class="quality-control">
-          <span>{{ copy.quality }}</span>
-          <select v-model="renderQuality">
-            <option value="high">{{ copy.qualityHigh }}</option>
-            <option value="balanced">{{ copy.qualityBalanced }}</option>
-            <option value="reduced">{{ copy.qualityReduced }}</option>
-          </select>
-        </label>
-        <button class="mode-link" type="button" @click="toggleImmersiveMode">
-          {{ immersiveMode ? copy.exitImmersive : copy.enterImmersive }}
+
+        <template v-if="immersiveMode">
+          <button
+            class="chip reduce-motion"
+            type="button"
+            :aria-pressed="reduceMotion"
+            :aria-label="copy.reduceMotion"
+            :title="copy.reduceMotion"
+            @click="toggleReduceMotion"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+              <circle cx="12" cy="12" r="7.5" />
+              <path v-if="reduceMotion" d="M8 12h8" stroke-linecap="round" />
+              <path v-else d="M12 8.5v7M8.5 12h7" stroke-linecap="round" />
+            </svg>
+            <span>{{ reduceMotion ? copy.motionReduced : copy.reduceMotion }}</span>
+          </button>
+          <label class="chip select">
+            <span class="visually-hidden">{{ copy.quality }}</span>
+            <select v-model="renderQuality">
+              <option value="high">{{ copy.qualityHigh }}</option>
+              <option value="balanced">{{ copy.qualityBalanced }}</option>
+              <option value="reduced">{{ copy.qualityReduced }}</option>
+            </select>
+          </label>
+        </template>
+
+        <button class="chip mode-toggle" type="button" @click="toggleImmersiveMode">
+          <!-- Phones get the short form; there is no room for the full phrase. -->
+          <span class="full">{{ immersiveMode ? copy.exitImmersive : copy.enterImmersive }}</span>
+          <span class="short">{{ immersiveMode ? copy.exitShort : copy.enterShort }}</span>
         </button>
       </div>
     </header>
 
-    <section v-if="view === 'start' && !immersiveMode" class="standard-home page-enter">
-      <div class="home-copy">
+    <!-- ------------------------------------------------ start (immersive) -->
+    <!-- The scene IS the interface here: no hero column, no 2D connection visual.
+         Controls sit low and quiet so the environment owns the viewport. -->
+    <main v-if="view === 'start' && immersiveMode" class="stage immersive-start">
+      <div class="core-console">
+        <p class="console-label">{{ copy.portalLabel }}</p>
+        <button
+          class="core-action"
+          type="button"
+          :disabled="isPreparingBackend || isOffline"
+          @click="createRoom"
+        >
+          {{ isPreparingBackend ? preparingLabel : copy.create }}
+        </button>
+        <button class="link" type="button" :aria-expanded="isJoinExpanded" @click="expandJoin">
+          {{ copy.join }}
+        </button>
+
+        <form v-if="isJoinExpanded" class="join compact" @submit.prevent="submitJoinCode">
+          <label for="immersive-room-code">{{ copy.codeLabel }}</label>
+          <div class="join-row">
+            <input
+              id="immersive-room-code"
+              ref="joinInput"
+              v-model="joinCode"
+              class="tabular"
+              inputmode="text"
+              autocomplete="off"
+              autocapitalize="characters"
+              spellcheck="false"
+              placeholder="A7K29XQ4"
+              maxlength="9"
+            />
+            <button
+              class="btn primary"
+              type="submit"
+              :disabled="normalizedJoinCode.length !== 8 || isPreparingBackend"
+            >
+              {{ copy.joinRoom }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </main>
+
+    <!-- ------------------------------------------------- start (standard) -->
+    <main v-else-if="view === 'start'" class="stage start">
+      <div class="pitch">
         <h1>{{ copy.headline }}</h1>
-        <p>{{ copy.intro }}</p>
-        <div class="home-actions">
-          <button class="button button-primary" type="button" :disabled="isPreparingBackend" @click="createRoom">
+        <p class="lede">{{ copy.intro }}</p>
+
+        <div class="actions">
+          <button
+            class="btn primary"
+            type="button"
+            :disabled="isPreparingBackend || isOffline"
+            @click="createRoom"
+          >
             {{ isPreparingBackend ? preparingLabel : copy.create }}
           </button>
-          <button class="button button-secondary" type="button" @click="isJoinExpanded = !isJoinExpanded">
+          <button
+            class="btn ghost"
+            type="button"
+            :aria-expanded="isJoinExpanded"
+            @click="expandJoin"
+          >
             {{ copy.join }}
           </button>
         </div>
-        <form v-if="isJoinExpanded" class="join-inline" @submit.prevent="submitJoinCode">
+
+        <form v-if="isJoinExpanded" class="join" @submit.prevent="submitJoinCode">
           <label for="room-code">{{ copy.codeLabel }}</label>
-          <div>
-            <input id="room-code" v-model="joinCode" inputmode="text" autocomplete="off" placeholder="A7K29XQ4" maxlength="9" />
-            <button class="button button-primary" type="submit" :disabled="normalizedJoinCode.length !== 8 || isPreparingBackend">{{ copy.joinRoom }}</button>
+          <div class="join-row">
+            <input
+              id="room-code"
+              ref="joinInput"
+              v-model="joinCode"
+              class="tabular"
+              inputmode="text"
+              autocomplete="off"
+              autocapitalize="characters"
+              spellcheck="false"
+              placeholder="A7K29XQ4"
+              maxlength="9"
+            />
+            <button
+              class="btn primary"
+              type="submit"
+              :disabled="normalizedJoinCode.length !== 8 || isPreparingBackend"
+            >
+              {{ copy.joinRoom }}
+            </button>
           </div>
+          <button v-if="isMobile" class="link" type="button" @click="startQrScanner">
+            {{ copy.scanQr }}
+          </button>
         </form>
-        <div v-if="serverStatus !== 'idle'" class="server-preparation" aria-live="polite">
-          <strong>{{ preparationTitle }}</strong>
-          <span>{{ statusMessage }}</span>
-          <small v-if="isPreparingBackend">{{ copy.elapsedTime }} {{ serverElapsedSeconds }}s.</small>
-          <button v-if="serverStatus === 'failed'" class="button button-secondary" type="button" @click="retryConnection">{{ copy.retry }}</button>
-        </div>
-        <p class="microcopy">{{ copy.footer }}</p>
-      </div>
-      <div class="connection-visual" aria-hidden="true">
-        <div class="signal-line signal-a"></div>
-        <div class="signal-line signal-b"></div>
-        <div class="device-node node-local"><span></span><strong>YOU</strong></div>
-        <div class="device-node node-remote"><span></span><strong>OTHER DEVICE</strong></div>
-        <div class="portal-mark"><span></span><span></span></div>
-      </div>
-      <div v-if="isMobileDevice" class="mobile-scan">
-        <button class="button button-secondary" type="button" @click="startQrScanner">{{ copy.scanQr }}</button>
-      </div>
-    </section>
 
-    <section v-else-if="view === 'start' && immersiveMode" class="immersive-view page-enter">
-      <div v-if="hasWebGL" ref="spaceMount" class="space-world" aria-label="Interactive PyDrop 3D space"></div>
-      <div v-else class="webgl-fallback">WebGL is unavailable. The simple PyDrop flow is still ready.</div>
-      <div class="immersive-core-panel" aria-live="polite">
-        <p>{{ appState === 'creating-room' ? preparingLabel : 'Temporary device portal' }}</p>
-        <button class="portal-action" type="button" :disabled="isPreparingBackend" @click="createRoom">
-          {{ isPreparingBackend ? preparingLabel : 'CREATE A ROOM' }}
-        </button>
-        <button class="ghost-action" type="button" @click="isJoinExpanded = !isJoinExpanded">{{ copy.join }}</button>
-        <form v-if="isJoinExpanded" class="join-inline compact" @submit.prevent="submitJoinCode">
-          <label for="immersive-room-code">{{ copy.codeLabel }}</label>
+        <!-- The free backend sleeps; say so rather than looking broken. -->
+        <div v-if="isPreparingBackend" class="waking" aria-live="polite">
+          <span class="pulse" aria-hidden="true"></span>
           <div>
-            <input id="immersive-room-code" v-model="joinCode" inputmode="text" autocomplete="off" placeholder="A7K29XQ4" maxlength="9" />
-            <button class="button button-primary" type="submit" :disabled="normalizedJoinCode.length !== 8 || isPreparingBackend">{{ copy.joinRoom }}</button>
+            <strong>{{ serverStatus === 'waking_up' ? copy.startingServer : copy.checkingServer }}</strong>
+            <small v-if="serverStatus === 'waking_up'">{{ copy.startingServerBody }}</small>
+            <small v-else>{{ copy.elapsedTime }} {{ serverElapsedSeconds }}s</small>
           </div>
-        </form>
-      </div>
-    </section>
-
-    <section v-else-if="view === 'room'" class="room-lobby page-enter" :class="{ immersive: immersiveMode }">
-      <div v-if="immersiveMode && hasWebGL" ref="spaceMount" class="space-world" aria-label="3D waiting room"></div>
-      <div class="room-content" aria-live="polite">
-        <p class="eyebrow">{{ immersiveMode ? 'ROOM' : copy.roomReady }}</p>
-        <h1>{{ immersiveMode ? displayRoomCode : copy.roomReady }}</h1>
-        <p>{{ statusMessage }}</p>
-        <div class="room-code-panel">
-          <span>{{ copy.codeLabel }}</span>
-          <strong>{{ displayRoomCode }}</strong>
-          <button class="button button-secondary" type="button" @click="copyRoomCode">{{ copy.copyCode }}</button>
-          <small v-if="copyFeedback">{{ copyFeedback }}</small>
         </div>
-        <div class="room-actions">
-          <button v-if="serverStatus === 'failed'" class="button button-primary" type="button" @click="retryConnection">{{ copy.retryConnection }}</button>
-          <button class="button button-secondary" type="button" @click="reset()">{{ copy.cancel }}</button>
-        </div>
-      </div>
-      <div class="qr-block">
-        <canvas ref="qrCanvas" aria-label="QR code to join this room"></canvas>
-        <span>{{ copy.scanToJoin }}</span>
-      </div>
-    </section>
 
-    <section v-else class="connected-view page-enter" :class="{ immersive: immersiveMode }">
-      <div v-if="immersiveMode" class="immersive-room">
-        <div v-if="hasWebGL" ref="threeMount" class="three-room" aria-label="3D transfer room"></div>
-        <div class="immersive-room-hud">
-          <div>
-            <p class="eyebrow">{{ appState === 'completed' ? copy.complete : copy.connectedTitle }}</p>
-            <h1>{{ appState === 'completed' ? copy.arrived : 'YOU + MY PHONE' }}</h1>
+        <p class="fineprint">{{ copy.footer }}</p>
+      </div>
+
+      <div class="visual">
+        <ConnectionField
+          :local-label="copy.you"
+          :remote-label="copy.otherDevice"
+          :phase="connectionPhase"
+        />
+      </div>
+    </main>
+
+    <!-- ----------------------------------------------------------- room -->
+    <main v-else-if="view === 'room'" class="stage room" :class="{ immersive: immersiveMode }">
+      <div class="room-copy" aria-live="polite">
+        <h2>{{ appState === 'creating-room' ? preparingLabel : copy.roomReady }}</h2>
+        <p class="lede">{{ copy.waitingBody }}</p>
+
+        <div class="code-plate">
+          <span class="code-label">{{ copy.codeLabel }}</span>
+          <strong class="code tabular">{{ displayRoomCode }}</strong>
+          <div class="code-actions">
+            <button class="btn ghost" type="button" @click="copyRoomCode">
+              {{ copy.copyCode }}
+            </button>
+            <span class="copy-feedback" aria-live="polite">{{ copyFeedback }}</span>
           </div>
-          <button class="exit-button" type="button" @click="reset()">{{ copy.exitRoom }}</button>
         </div>
-        <div class="scene-device-label scene-computer-label">YOU <small>Connected</small></div>
-        <div class="scene-device-label scene-phone-label">MY PHONE <small>{{ deviceConnectionStatus === 'connected' ? 'Connected' : copy.deviceDisconnected }}</small></div>
+
+        <div class="waiting-row">
+          <span class="pulse coral" aria-hidden="true"></span>
+          <span>{{ copy.waiting }}</span>
+        </div>
+
+        <button class="link" type="button" @click="reset()">{{ copy.cancel }}</button>
       </div>
 
-      <div v-else class="standard-connected">
-        <div class="connected-copy">
-          <p class="eyebrow">{{ transferComplete ? copy.complete : copy.connectedTitle }}</p>
-          <h1>{{ transferComplete ? copy.arrived : copy.connectedBody }}</h1>
-        </div>
-        <div class="connection-visual connected" aria-hidden="true">
-          <div class="signal-line signal-a"></div>
-          <div class="signal-line signal-b"></div>
-          <div class="device-node node-local"><span></span><strong>MY COMPUTER</strong></div>
-          <div class="device-node node-remote"><span></span><strong>MY PHONE</strong></div>
-          <div class="portal-mark"><span></span><span></span></div>
-        </div>
+      <!-- The QR is the fastest path on a phone, so it stays visible in both modes
+           on desktop; in immersive it sits smaller so the scene keeps the room. -->
+      <RoomQr v-if="joinUrl" :value="joinUrl" :label="copy.scanToJoin" />
+    </main>
+
+    <!-- ------------------------------------------------------ connected -->
+    <main v-else class="stage connected" :class="{ 'on-world': immersiveMode }">
+      <div class="connected-head">
+        <h2>{{ transferComplete ? copy.complete : copy.connectedTitle }}</h2>
+        <p class="lede">{{ transferComplete ? copy.arrived : copy.connectedBody }}</p>
       </div>
 
-      <div v-if="deviceConnectionStatus === 'disconnected'" class="connection-lost-banner" role="alert">
+      <!-- In standard mode the 2D field carries the connection; in immersive the 3D does. -->
+      <div v-if="!immersiveMode" class="visual">
+        <ConnectionField
+          :local-label="copy.thisDevice"
+          :remote-label="copy.otherDevice"
+          :phase="deviceConnectionStatus === 'connected' ? 'linked' : 'waiting'"
+          :flow="liveFlow"
+          :flow-direction="isReceiving ? 'receive' : 'send'"
+        />
+      </div>
+
+      <p v-else-if="appState === 'entering-room'" class="traversing" aria-live="polite">
+        {{ copy.enteringRoom }}
+      </p>
+
+      <div v-if="deviceConnectionStatus === 'disconnected'" class="banner" role="alert">
         <strong>{{ copy.connectionLostTitle }}</strong>
         <span>{{ copy.connectionLostBody }}</span>
-        <button v-if="appState === 'error'" class="button button-secondary" type="button" @click="retryConnection">{{ copy.retryConnection }}</button>
       </div>
 
-      <div class="transfer-dock">
-        <div class="dock-top">
-          <span>{{ direction === 'receive' ? copy.receiveModeActive : selectedFile ? selectedFile.name : 'Direct transfer' }}</span>
-          <div class="direction-switch" role="group" :aria-label="copy.modeSend + ' / ' + copy.modeReceive">
-            <button :class="{ active: direction === 'send' }" :aria-pressed="direction === 'send'" :disabled="isTransferring" type="button" @click="setDirection('send')">{{ copy.modeSend }}</button>
-            <button :class="{ active: direction === 'receive' }" :aria-pressed="direction === 'receive'" :disabled="isTransferring" type="button" @click="setDirection('receive')">{{ copy.modeReceive }}</button>
-          </div>
-        </div>
-        <label
-          v-if="direction === 'send'"
-          class="drop-zone"
-          :class="{ 'has-file': selectedFile, 'is-drag-over': isDragOver, 'is-disabled': isTransferring }"
-          @dragover="onDropZoneDragOver"
-          @dragleave="onDropZoneDragLeave"
-          @drop="onDropZoneDrop"
-        >
-          <input type="file" :disabled="isTransferring" @change="onFileSelected" />
-          <span class="upload-mark" aria-hidden="true"></span>
-          <span><strong>{{ fileLabel }}</strong><small>{{ selectedFile ? copy.fileSelected : copy.chooseOrDrag }}</small></span>
-        </label>
-        <div v-else class="receive-zone">
-          <span class="receive-mark" aria-hidden="true"></span>
-          <span><strong>{{ copy.waitingForFile }}</strong><small>{{ copy.waitingForFileBody }}</small></span>
-        </div>
-        <p v-if="peerModeMessage" class="peer-mode" :class="{ 'is-warning': bothReceiving }" aria-live="polite">
-          {{ peerModeMessage }}
-        </p>
-        <div v-if="isTransferring || transferComplete" class="transfer-progress" aria-live="polite">
-          <span>{{ transferComplete ? copy.complete : `${copy.sending} ${activeTransferName}` }}</span>
-          <strong>{{ transferPercent }}%</strong>
-        </div>
-        <div v-if="isReceiving || (incomingName && !transferComplete)" class="transfer-progress is-receiving" aria-live="polite">
-          <span>{{ isReceiving ? `${copy.receiving} ${incomingName}` : `${copy.received} ${incomingName}` }}</span>
-          <strong>{{ receivePercent }}%</strong>
-        </div>
-        <button v-if="direction === 'send'" class="transfer-button" :disabled="!canTransfer" type="button" @click="startTransfer">
-          {{ deviceConnectionStatus === 'disconnected' ? copy.deviceDisconnected : isTransferring ? `${copy.sending}...` : transferComplete ? copy.sendAnother : copy.send }}
-        </button>
-      </div>
-    </section>
+      <TransferDock
+        :copy="copy"
+        :direction="direction"
+        :remote-direction="remoteDirection"
+        :selected-file="selectedFile"
+        :is-transferring="isTransferring"
+        :is-receiving="isReceiving"
+        :transfer-complete="transferComplete"
+        :transfer-percent="transferPercent"
+        :receive-percent="receivePercent"
+        :active-transfer-name="activeTransferName"
+        :incoming-name="incomingName"
+        :can-transfer="canTransfer"
+        :connection="deviceConnectionStatus"
+        :peer-mode-message="peerModeMessage"
+        :both-receiving="bothReceiving"
+        :is-drag-over="isDragOver"
+        :file-label="fileLabel"
+        @set-direction="setDirection"
+        @select-file="onFileSelected"
+        @drag-over="onDragOver"
+        @drag-leave="onDragLeave"
+        @drop="onDrop"
+        @send="startTransfer"
+        @clear="clearFile"
+      />
 
-    <div v-if="notice" class="notice-bar" role="alert">
-      <span>{{ notice }}</span>
-      <button type="button" :aria-label="copy.dismiss" @click="dismissNotice">&times;</button>
-    </div>
+      <button class="link leave" type="button" @click="reset()">{{ copy.exitRoom }}</button>
+    </main>
 
-    <div v-if="isScanningQr" class="qr-scanner-panel" role="dialog" aria-label="Scan a PyDrop room QR code">
+    <footer class="credit">
+      <span>{{ copy.createdBy }}</span>
+      <a href="https://github.com/Devgusta5" target="_blank" rel="noopener noreferrer">
+        Gustavo Rodrigues
+      </a>
+    </footer>
+
+    <!-- WebGL missing: say what is lost and that nothing else is. -->
+    <p v-if="immersiveMode && !hasWebGL" class="webgl-note" role="status">
+      <strong>{{ copy.webglMissing }}</strong>
+      <span>{{ copy.webglMissingAction }}</span>
+    </p>
+
+    <!-- ------------------------------------------------------- overlays -->
+    <div v-if="isScanningQr" class="scanner" role="dialog" :aria-label="copy.scanQr">
       <video ref="qrVideo" playsinline></video>
       <p>{{ copy.scanQrDialog }}</p>
-      <button class="button button-secondary" type="button" @click="stopQrScanner">{{ copy.cancelScan }}</button>
+      <button class="btn ghost" type="button" @click="stopQrScanner">{{ copy.cancelScan }}</button>
     </div>
-  </main>
+
+    <div v-if="isOffline" class="offline-bar" role="status">
+      {{ copy.offline }} {{ copy.offlineBody }}
+    </div>
+
+    <div v-if="notice" class="notice" role="alert">
+      <div class="notice-text">
+        <strong>{{ notice.title }}</strong>
+        <span>{{ notice.body }}</span>
+      </div>
+      <button
+        v-if="notice.action"
+        class="btn ghost small"
+        type="button"
+        @click="handleNoticeAction(notice.action)"
+      >
+        {{ notice.action === 'newRoom' ? copy.create : copy.retry }}
+      </button>
+      <button class="dismiss" type="button" :aria-label="copy.dismiss" @click="dismissNotice">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+          <path d="M7 7l10 10M17 7L7 17" stroke-linecap="round" />
+        </svg>
+      </button>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.app-shell { background: var(--deep-space); color: var(--soft-white); min-height: 100svh; overflow: hidden; padding: 28px clamp(20px, 4vw, 58px); position: relative; }
-.app-shell::before { background: radial-gradient(circle at 68% 28%, rgba(183, 243, 74, .08), transparent 32%), radial-gradient(circle at 84% 64%, rgba(255, 107, 94, .08), transparent 30%); content: ''; inset: 0; pointer-events: none; position: absolute; }
-.topbar { align-items: center; display: flex; gap: 24px; justify-content: space-between; margin: 0 auto; max-width: 1220px; position: relative; z-index: 10; }
-.brand { align-items: center; background: transparent; border: 0; color: var(--soft-white); display: flex; font-family: var(--font-brand); font-size: 21px; font-weight: 700; gap: 12px; padding: 0; }
-.brand-symbol { display: block; height: 34px; object-fit: contain; width: 42px; }
-.topbar-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-end; }
-.text-control, .mode-link, .quality-control select { background: rgba(18, 24, 28, .76); border: 1px solid var(--quiet-border); color: var(--soft-white); font-size: 12px; padding: 10px 12px; }
-.quality-control { align-items: center; color: var(--muted-gray); display: flex; font-size: 11px; gap: 8px; }
-.mode-link { color: var(--lime-flow); }
-.standard-home { align-items: center; display: grid; gap: clamp(28px, 6vw, 88px); grid-template-columns: minmax(0, .9fr) minmax(360px, 1.1fr); margin: 0 auto; max-width: 1220px; min-height: calc(100svh - 90px); position: relative; z-index: 2; }
-.home-copy h1, .connected-copy h1, .room-content h1 { font-family: var(--font-brand); font-size: clamp(3.6rem, 7vw, 7.4rem); font-weight: 700; letter-spacing: 0; line-height: .9; max-width: 760px; white-space: pre-line; }
-.home-copy p, .connected-copy p, .room-content p { color: var(--muted-gray); font-size: 18px; margin-top: 24px; max-width: 480px; }
-.home-actions, .room-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 14px; margin-top: 34px; }
-.button, .transfer-button { border: 0; font-weight: 750; min-height: 46px; padding: 0 18px; transition: transform .2s ease, border-color .2s ease, background .2s ease; }
-.button:hover, .transfer-button:hover, .mode-link:hover { transform: translateY(-1px); }
-.button-primary { background: var(--lime-flow); color: var(--deep-space); }
-.button-primary:disabled, .transfer-button:disabled { cursor: not-allowed; opacity: .45; transform: none; }
-.button-secondary { background: var(--graphite); border: 1px solid var(--quiet-border); color: var(--soft-white); }
-.join-inline { background: rgba(18, 24, 28, .7); border: 1px solid var(--quiet-border); margin-top: 18px; max-width: 500px; padding: 14px; }
-.join-inline label { color: var(--muted-gray); display: block; font-size: 12px; margin-bottom: 8px; }
-.join-inline div { display: grid; gap: 10px; grid-template-columns: 1fr auto; }
-.join-inline input { background: var(--deep-space); border: 1px solid var(--quiet-border); color: var(--soft-white); font-family: var(--font-mono); min-width: 0; padding: 0 13px; text-transform: uppercase; }
-.join-inline.compact { background: rgba(11, 15, 18, .58); margin-inline: auto; width: min(480px, 100%); }
-.microcopy { color: var(--muted-gray); font-size: 13px; margin-top: 28px; }
-.server-preparation { border-left: 2px solid var(--lime-flow); color: var(--muted-gray); display: grid; gap: 6px; margin-top: 24px; padding-left: 14px; }
-.server-preparation strong { color: var(--soft-white); }
-.connection-visual { aspect-ratio: 1.25; min-height: 390px; position: relative; }
-.connection-visual::before { border: 1px solid rgba(244, 247, 242, .06); content: ''; inset: 9% 5%; position: absolute; transform: skewY(-5deg); }
-.signal-line { background: linear-gradient(90deg, transparent, rgba(183, 243, 74, .72), rgba(255, 107, 94, .62), transparent); height: 1px; left: 20%; position: absolute; top: 50%; transform-origin: center; width: 60%; }
-.signal-a { transform: rotate(-11deg); }
-.signal-b { opacity: .52; transform: rotate(13deg); }
-.device-node { align-items: center; display: grid; gap: 11px; justify-items: center; position: absolute; }
-.device-node span { border-radius: 50%; box-shadow: 0 0 38px currentColor; display: block; height: 18px; width: 18px; }
-.device-node strong { color: var(--muted-gray); font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; }
-.node-local { color: var(--lime-flow); left: 12%; top: 42%; }
-.node-remote { color: var(--coral-signal); right: 10%; top: 54%; }
-.portal-mark { display: grid; height: 112px; left: 50%; place-items: center; position: absolute; top: 48%; transform: translate(-50%, -50%); width: 146px; }
-.portal-mark span { border: 2px solid var(--lime-flow); border-radius: 999px; height: 78px; position: absolute; transform: translateX(-24px) rotate(-24deg); width: 78px; }
-.portal-mark span:last-child { border-color: var(--coral-signal); transform: translateX(24px) rotate(24deg); }
-.mobile-scan { bottom: 28px; position: absolute; right: 0; }
-.immersive-view, .room-lobby.immersive, .connected-view.immersive { height: calc(100svh - 90px); margin: 0 calc(clamp(20px, 4vw, 58px) * -1) -28px; position: relative; }
-.space-world, .three-room { background: var(--deep-space); inset: 0; overflow: hidden; position: absolute; z-index: 0; }
-.space-world::after, .three-room::after { background: radial-gradient(ellipse at center, transparent 46%, rgba(4, 7, 9, .78) 100%); content: ''; inset: 0; pointer-events: none; position: absolute; }
-.space-world canvas, .three-room canvas { display: block; height: 100%; width: 100%; }
-.space-world.is-core-hovered { cursor: pointer; }
-.immersive-core-panel { bottom: 8vh; left: 50%; position: absolute; text-align: center; transform: translateX(-50%); width: min(720px, calc(100% - 42px)); z-index: 3; }
-.immersive-core-panel p, .eyebrow { color: var(--muted-gray); font-family: var(--font-mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
-.portal-action { background: rgba(183, 243, 74, .12); border: 1px solid rgba(183, 243, 74, .82); box-shadow: 0 0 30px rgba(183, 243, 74, .12), inset 0 0 22px rgba(183, 243, 74, .06); color: var(--lime-flow); font-family: var(--font-brand); font-size: clamp(2rem, 4.5vw, 4.5rem); font-weight: 700; margin-top: 16px; padding: 12px 24px; width: 100%; }
-.ghost-action { background: transparent; border: 0; color: var(--muted-gray); margin-top: 14px; }
-.webgl-fallback { display: grid; inset: 0; place-items: center; position: absolute; z-index: 2; }
-.room-lobby { align-items: center; display: grid; gap: 34px; grid-template-columns: minmax(0, 1fr) auto; margin: 0 auto; max-width: 1120px; min-height: calc(100svh - 90px); position: relative; z-index: 2; }
-.room-lobby.immersive { display: block; max-width: none; min-height: 0; }
-.room-lobby.immersive .room-content { left: clamp(20px, 6vw, 82px); position: absolute; top: 14vh; z-index: 2; }
-.room-content h1 { font-size: clamp(3.2rem, 6vw, 6.3rem); }
-.room-code-panel { background: rgba(18, 24, 28, .78); border: 1px solid var(--quiet-border); display: grid; gap: 11px; margin-top: 28px; max-width: 380px; padding: 18px; }
-.room-code-panel span, .room-code-panel small { color: var(--muted-gray); font-size: 12px; }
-.room-code-panel strong { color: var(--lime-flow); font-family: var(--font-mono); font-size: clamp(2.1rem, 5vw, 4.2rem); letter-spacing: .04em; }
-.qr-block { align-items: center; color: var(--muted-gray); display: grid; gap: 12px; justify-items: center; position: relative; z-index: 2; }
-.qr-block canvas { border: 1px solid var(--quiet-border); height: 156px; width: 156px; }
-.connected-view { margin: 0 auto; max-width: 1120px; min-height: calc(100svh - 90px); padding-top: 5vh; position: relative; z-index: 2; }
-.standard-connected { align-items: center; display: grid; gap: 42px; grid-template-columns: minmax(0, .8fr) minmax(340px, 1fr); }
-.standard-connected .connection-visual { min-height: 300px; }
-.immersive-room { height: 100%; position: relative; }
-.immersive-room-hud { align-items: flex-start; display: flex; justify-content: space-between; left: clamp(20px, 5vw, 70px); position: absolute; right: clamp(20px, 5vw, 70px); top: 32px; z-index: 4; }
-.immersive-room-hud h1 { font-family: var(--font-brand); font-size: clamp(2.1rem, 4vw, 4.2rem); font-weight: 700; }
-.exit-button { background: rgba(18, 24, 28, .72); border: 1px solid var(--quiet-border); color: var(--soft-white); padding: 11px 14px; }
-.scene-device-label { background: rgba(18, 24, 28, .74); border: 1px solid rgba(244, 247, 242, .12); color: var(--soft-white); font-family: var(--font-mono); font-size: 12px; padding: 10px 12px; position: absolute; z-index: 3; }
-.scene-device-label small { color: var(--muted-gray); display: block; margin-top: 4px; }
-.scene-computer-label { bottom: 25%; left: 16%; }
-.scene-phone-label { bottom: 25%; right: 16%; }
-.connection-lost-banner { background: rgba(255, 89, 100, .12); border: 1px solid rgba(255, 89, 100, .55); color: var(--soft-white); display: grid; gap: 4px; margin: 16px 0; padding: 14px; }
-.connection-lost-banner .button { justify-self: start; margin-top: 6px; }
-.transfer-dock { background: rgba(18, 24, 28, .92); border: 1px solid var(--quiet-border); bottom: 24px; left: 50%; max-width: 760px; padding: 17px; position: fixed; transform: translateX(-50%); width: min(760px, calc(100% - 40px)); z-index: 7; }
-.dock-top { align-items: center; display: flex; justify-content: space-between; margin-bottom: 13px; }
-.dock-top > span { color: var(--muted-gray); font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.direction-switch { border: 1px solid var(--quiet-border); display: flex; padding: 3px; }
-.direction-switch button { background: transparent; border: 0; color: var(--muted-gray); font-size: 12px; padding: 7px 11px; }
-.direction-switch button.active { background: var(--lime-flow); color: var(--deep-space); }
-.drop-zone { align-items: center; border: 1px dashed rgba(244, 247, 242, .22); cursor: pointer; display: flex; gap: 14px; min-height: 58px; padding: 10px 13px; transition: background .15s ease, border-color .15s ease; }
-.drop-zone:hover, .drop-zone.has-file { background: rgba(183, 243, 74, .05); border-color: var(--lime-flow); }
-.drop-zone.is-drag-over { background: rgba(183, 243, 74, .12); border-color: var(--lime-flow); border-style: solid; }
-.drop-zone.is-disabled { cursor: not-allowed; opacity: .55; }
-.drop-zone input { display: none; }
-.upload-mark { border: 2px solid var(--lime-flow); border-radius: 999px; height: 30px; position: relative; width: 30px; }
-.upload-mark::before, .upload-mark::after { background: var(--lime-flow); content: ''; left: 50%; position: absolute; top: 50%; transform: translate(-50%, -50%); }
-.upload-mark::before { height: 13px; width: 2px; }
-.upload-mark::after { height: 2px; width: 13px; }
-.drop-zone strong, .drop-zone small { display: block; }
-.drop-zone small { color: var(--muted-gray); font-size: 12px; margin-top: 2px; }
-.receive-zone { align-items: center; border: 1px dashed rgba(255, 107, 94, .38); background: rgba(255, 107, 94, .05); display: flex; gap: 14px; min-height: 58px; padding: 10px 13px; }
-.receive-zone strong, .receive-zone small { display: block; }
-.receive-zone small { color: var(--muted-gray); font-size: 12px; margin-top: 2px; }
-.receive-mark { border: 2px solid var(--coral-signal); border-radius: 999px; flex: none; height: 30px; position: relative; width: 30px; }
-.receive-mark::before { border-bottom: 2px solid var(--coral-signal); border-right: 2px solid var(--coral-signal); content: ''; height: 10px; left: 50%; position: absolute; top: 44%; transform: translate(-50%, -50%) rotate(45deg); width: 10px; }
-.peer-mode { color: var(--muted-gray); font-size: 12px; margin-top: 10px; }
-.peer-mode.is-warning { color: var(--coral-signal); }
-.transfer-progress { align-items: center; color: var(--muted-gray); display: flex; justify-content: space-between; margin: 12px 0 0; }
-.transfer-progress strong { color: var(--lime-flow); font-family: var(--font-mono); }
-.transfer-progress.is-receiving strong { color: var(--coral-signal); }
-.transfer-button { background: var(--coral-signal); color: var(--deep-space); margin-top: 12px; width: 100%; }
-.qr-scanner-panel { background: rgba(11, 15, 18, .96); border: 1px solid var(--quiet-border); box-shadow: 0 24px 80px rgba(0, 0, 0, .42); display: grid; gap: 14px; left: 50%; padding: 18px; position: fixed; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100% - 34px)); z-index: 20; }
-.qr-scanner-panel video { background: #000; width: 100%; }
-.notice-bar { align-items: center; background: rgba(18, 24, 28, .96); border: 1px solid rgba(255, 89, 100, .55); bottom: 24px; box-shadow: 0 18px 50px rgba(0, 0, 0, .46); color: var(--soft-white); display: flex; gap: 14px; left: 24px; padding: 14px 16px; position: fixed; width: min(420px, calc(100% - 48px)); z-index: 30; }
-.notice-bar span { flex: 1; font-size: 14px; }
-.notice-bar button { background: transparent; border: 0; color: var(--muted-gray); font-size: 20px; line-height: 1; padding: 0 4px; }
-.notice-bar button:hover { color: var(--soft-white); }
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
+/* ------------------------------------------------------------------ shell */
+.shell {
+  position: relative;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  /* Safe areas: the dock and credit sit near the bottom edge on phones. */
+  padding: max(var(--space-5), env(safe-area-inset-top)) clamp(var(--space-4), 4vw, var(--space-8))
+    max(var(--space-5), env(safe-area-inset-bottom));
 }
 
-@media (max-width: 820px) {
-  .app-shell { padding: 20px; }
-  .topbar { align-items: flex-start; }
-  .topbar-actions { gap: 8px; }
-  .quality-control span { display: none; }
-  .standard-home, .standard-connected, .room-lobby { display: flex; flex-direction: column; justify-content: center; min-height: calc(100svh - 76px); }
-  .home-copy h1, .connected-copy h1, .room-content h1 { font-size: clamp(3rem, 14vw, 5rem); }
-  .connection-visual { min-height: 300px; width: 100%; }
-  .join-inline div { grid-template-columns: 1fr; }
-  .immersive-view, .room-lobby.immersive, .connected-view.immersive { height: calc(100svh - 76px); margin: 0 -20px -20px; }
-  .room-lobby.immersive .room-content { left: 20px; right: 20px; top: 12vh; }
-  .qr-block { display: none; }
-  .immersive-room-hud { display: grid; gap: 12px; left: 20px; right: 20px; }
-  .scene-computer-label { bottom: 28%; left: 20px; }
-  .scene-phone-label { bottom: 28%; right: 20px; }
-  .transfer-dock { bottom: 14px; width: calc(100% - 28px); }
-  /* Above the dock instead of on top of it — both are bottom-anchored on mobile. */
-  .notice-bar { bottom: auto; left: 14px; top: 14px; width: calc(100% - 28px); }
+.world {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background: var(--deep-space);
+}
+
+.world.interactive {
+  cursor: pointer;
+}
+
+.world :deep(canvas) {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* A vignette so overlaid text always has ground, whatever the scene is doing. */
+.shell.immersive::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 50% 45%, transparent 38%, rgba(6, 9, 11, 0.86) 100%);
+}
+
+.topbar,
+.stage,
+.credit,
+.webgl-note {
+  position: relative;
+  z-index: 2;
+}
+
+/* ----------------------------------------------------------------- topbar */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  width: 100%;
+  max-width: var(--shell-max);
+  margin: 0 auto;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--soft-white);
+}
+
+.wordmark {
+  font-family: var(--font-brand);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 var(--space-3);
+  background: color-mix(in srgb, var(--graphite) 80%, transparent);
+  border: 1px solid var(--quiet-border);
+  border-radius: var(--radius);
+  color: var(--muted-gray);
+  font-size: 12px;
+  font-weight: 500;
+  transition: color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.chip:hover {
+  color: var(--soft-white);
+  border-color: var(--muted-gray);
+}
+
+.chip.reduce-motion {
+  gap: var(--space-2);
+}
+
+.chip.reduce-motion svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.chip.select {
+  padding: 0;
+}
+
+.chip.select select {
+  background: transparent;
+  border: 0;
+  padding: 0 var(--space-3);
+  height: 36px;
+  color: inherit;
+  font-size: 12px;
+}
+
+.chip.select select option {
+  background: var(--graphite);
+  color: var(--soft-white);
+}
+
+.mode-toggle {
+  color: var(--lime-flow);
+  border-color: var(--lime-edge);
+}
+
+.mode-toggle .short {
+  display: none;
+}
+
+.mode-toggle:hover {
+  color: var(--deep-space);
+  background: var(--lime-flow);
+  border-color: var(--lime-flow);
+}
+
+/* ------------------------------------------------------------------ stage */
+.stage {
+  flex: 1;
+  width: 100%;
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  display: grid;
+  align-content: center;
+  padding: var(--space-7) 0 var(--space-5);
+}
+
+/* Two fields, per the spec: language left, connection right. */
+.start {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.92fr);
+  align-items: center;
+  gap: clamp(var(--space-6), 6vw, var(--space-8));
+}
+
+h1 {
+  font-family: var(--font-brand);
+  font-size: clamp(2.6rem, 6.4vw, 5.4rem);
+  font-weight: 700;
+  line-height: 0.96;
+  letter-spacing: -0.035em;
+  white-space: pre-line;
+  text-wrap: balance;
+}
+
+h2 {
+  font-family: var(--font-brand);
+  font-size: clamp(1.9rem, 3.6vw, 3rem);
+  font-weight: 600;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+
+.lede {
+  color: var(--muted-gray);
+  font-size: clamp(15px, 1.4vw, 17px);
+  max-width: var(--measure);
+  margin-top: var(--space-4);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 var(--space-5);
+  border: 0;
+  border-radius: var(--radius);
+  font-size: 15px;
+  font-weight: 600;
+  transition: transform var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.btn.primary {
+  background: var(--lime-flow);
+  color: var(--deep-space);
+}
+
+.btn.ghost {
+  background: color-mix(in srgb, var(--graphite) 85%, transparent);
+  border: 1px solid var(--quiet-border);
+  color: var(--soft-white);
+}
+
+.btn.ghost:hover {
+  border-color: var(--muted-gray);
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn.small {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  font-size: 13px;
+}
+
+.link {
+  background: none;
+  border: 0;
+  padding: var(--space-2) 0;
+  color: var(--muted-gray);
+  font-size: 14px;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-color: var(--quiet-border);
+}
+
+.link:hover {
+  color: var(--soft-white);
+  text-decoration-color: currentColor;
+}
+
+/* ------------------------------------------------------------------- join */
+.join {
+  margin-top: var(--space-5);
+  padding: var(--space-4);
+  background: color-mix(in srgb, var(--graphite) 70%, transparent);
+  border: 1px solid var(--quiet-border);
+  border-radius: var(--radius);
+  max-width: 480px;
+}
+
+.join label {
+  display: block;
+  color: var(--muted-gray);
+  font-size: 12px;
+  margin-bottom: var(--space-2);
+}
+
+.join-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--space-2);
+}
+
+.join input {
+  min-width: 0;
+  min-height: 48px;
+  padding: 0 var(--space-3);
+  background: var(--deep-space);
+  border: 1px solid var(--quiet-border);
+  border-radius: var(--radius);
+  color: var(--soft-white);
+  font-size: 17px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.join input::placeholder {
+  color: var(--muted-gray);
+  opacity: 0.6;
+  letter-spacing: 0.12em;
+}
+
+.join input:focus-visible {
+  border-color: var(--lime-flow);
+}
+
+/* ---------------------------------------------------------------- waking */
+.waking {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  color: var(--muted-gray);
+  font-size: 13px;
+}
+
+.waking strong {
+  display: block;
+  color: var(--soft-white);
+  font-weight: 500;
+}
+
+.waking small {
+  display: block;
+  margin-top: 2px;
+}
+
+.pulse {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--lime-flow);
+  box-shadow: 0 0 0 0 var(--lime-edge);
+  animation: pulse 1.8s var(--ease-out) infinite;
+}
+
+.pulse.coral {
+  background: var(--coral-signal);
+  box-shadow: 0 0 0 0 var(--coral-edge);
+}
+
+@keyframes pulse {
+  70% { box-shadow: 0 0 0 9px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.fineprint {
+  margin-top: var(--space-6);
+  color: var(--muted-gray);
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------------- room */
+/* The code and the QR are two routes to the same thing, so they sit together
+   rather than at opposite ends of a wide screen. */
+.room {
+  grid-template-columns: minmax(0, auto) auto;
+  justify-content: start;
+  align-items: center;
+  gap: clamp(var(--space-6), 5vw, var(--space-8));
+}
+
+.code-plate {
+  margin-top: var(--space-5);
+  padding: var(--space-4);
+  background: color-mix(in srgb, var(--graphite) 80%, transparent);
+  border: 1px solid var(--quiet-border);
+  border-radius: var(--radius);
+  max-width: 460px;
+}
+
+.code-label {
+  display: block;
+  color: var(--muted-gray);
+  font-size: 12px;
+}
+
+.code {
+  display: block;
+  margin: var(--space-2) 0 var(--space-3);
+  color: var(--lime-flow);
+  font-size: clamp(2rem, 5.6vw, 3.4rem);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+
+.code-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.copy-feedback {
+  color: var(--transfer-green);
+  font-size: 13px;
+}
+
+.waiting-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  color: var(--muted-gray);
+  font-size: 14px;
+}
+
+.waiting-row .pulse {
+  margin-top: 0;
+}
+
+.qr {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.qr canvas {
+  display: block;
+  width: 168px;
+  height: 168px;
+  padding: var(--space-3);
+  background: var(--soft-white);
+  border-radius: var(--radius);
+}
+
+.qr figcaption {
+  color: var(--muted-gray);
+  font-size: 12px;
+  text-align: center;
+  max-width: 180px;
+}
+
+/* -------------------------------------------------------------- connected */
+.connected {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  max-width: 720px;
+  justify-items: stretch;
+}
+
+.connected-head {
+  text-align: left;
+}
+
+.traversing {
+  color: var(--muted-gray);
+  font-size: 14px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+.banner {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  background: var(--error-wash);
+  border: 1px solid rgba(255, 89, 100, 0.5);
+  border-radius: var(--radius);
+  font-size: 14px;
+}
+
+.banner span {
+  color: var(--muted-gray);
+}
+
+.leave {
+  justify-self: start;
+}
+
+/* ------------------------------------------------------- immersive start */
+/* No hero column here: the scene is the interface. The console sits low so the
+   core stays the centre of attention, and stays a real focusable control. */
+.immersive-start {
+  align-content: end;
+  justify-items: center;
+  padding-bottom: clamp(var(--space-6), 8vh, var(--space-8));
+  pointer-events: none;
+}
+
+.core-console {
+  pointer-events: auto;
+  display: grid;
+  justify-items: center;
+  gap: var(--space-3);
+  width: min(460px, 100%);
+  text-align: center;
+}
+
+.console-label {
+  color: var(--muted-gray);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+/* Sized as a control, not a billboard: the 3D core is the hero, not this. */
+.core-action {
+  min-height: 52px;
+  padding: 0 var(--space-6);
+  background: color-mix(in srgb, var(--lime-flow) 14%, transparent);
+  border: 1px solid var(--lime-flow);
+  border-radius: var(--radius);
+  color: var(--lime-flow);
+  font-family: var(--font-brand);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  backdrop-filter: blur(8px);
+  transition: background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.core-action:hover:not(:disabled) {
+  background: var(--lime-flow);
+  color: var(--deep-space);
+}
+
+.core-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Panels floating over the world need their own ground to stay readable. */
+.immersive .code-plate,
+.join.compact {
+  background: color-mix(in srgb, var(--deep-space) 84%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.join.compact {
+  margin-top: var(--space-2);
+  width: 100%;
+  text-align: left;
+}
+
+/* In immersive the room readout is a quiet overlay, not a two-column page. */
+.room.immersive {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-content: end;
+  padding-bottom: clamp(var(--space-6), 7vh, var(--space-8));
+}
+
+.room.immersive h2 {
+  font-size: clamp(1.4rem, 2.4vw, 1.9rem);
+}
+
+.room.immersive .lede {
+  font-size: 14px;
+}
+
+.room.immersive .qr canvas {
+  width: 124px;
+  height: 124px;
+}
+
+/* ----------------------------------------------------------------- credit */
+.credit {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding-top: var(--space-5);
+  color: var(--muted-gray);
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.credit:hover {
+  opacity: 1;
+}
+
+/* Over the world the credit stays out of the console's way. */
+.shell.immersive .credit {
+  justify-content: center;
+  padding-top: var(--space-3);
+}
+
+.credit a {
+  color: var(--muted-gray);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--quiet-border);
+}
+
+.credit a:hover {
+  color: var(--lime-flow);
+  text-decoration-color: currentColor;
+}
+
+.webgl-note {
+  display: grid;
+  gap: var(--space-1);
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--space-4);
+  border: 1px solid var(--quiet-border);
+  border-radius: var(--radius);
+  font-size: 14px;
+}
+
+.webgl-note span {
+  color: var(--muted-gray);
+}
+
+/* --------------------------------------------------------------- overlays */
+.scanner {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 40;
+  width: min(420px, calc(100% - var(--space-6)));
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--graphite);
+  border: 1px solid var(--quiet-border);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 70px -12px rgba(0, 0, 0, 0.7);
+}
+
+.scanner video {
+  width: 100%;
+  border-radius: var(--radius);
+  background: #000;
+}
+
+.scanner p {
+  color: var(--muted-gray);
+  font-size: 14px;
+}
+
+.offline-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 45;
+  padding: var(--space-2) var(--space-4);
+  background: var(--slate-charcoal);
+  border-bottom: 1px solid var(--quiet-border);
+  color: var(--muted-gray);
+  font-size: 13px;
+  text-align: center;
+}
+
+.notice {
+  position: fixed;
+  left: var(--space-5);
+  bottom: max(var(--space-5), env(safe-area-inset-bottom));
+  z-index: 50;
+  width: min(420px, calc(100% - var(--space-7)));
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--graphite);
+  border: 1px solid rgba(255, 89, 100, 0.55);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 50px -12px rgba(0, 0, 0, 0.66);
+}
+
+.notice-text {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+
+.notice-text strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.notice-text span {
+  color: var(--muted-gray);
+  font-size: 13px;
+}
+
+.dismiss {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 0;
+  color: var(--muted-gray);
+}
+
+.dismiss:hover {
+  color: var(--soft-white);
+}
+
+.dismiss svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* ------------------------------------------------------------ responsive */
+@media (max-width: 900px) {
+  .start,
+  .room {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-6);
+  }
+
+  /* The visual reads as a band above the copy rather than a shrunken square. */
+  .start .visual {
+    order: -1;
+  }
+
+  .qr {
+    justify-items: start;
+  }
+
+  .stage {
+    padding: var(--space-6) 0 var(--space-4);
+  }
+}
+
+@media (max-width: 620px) {
+  .topbar {
+    gap: var(--space-2);
+  }
+
+  .wordmark {
+    font-size: 19px;
+  }
+
+  /* Phones keep the header on one row: the two scene controls become icon-width
+     and the mode toggle shortens, rather than wrapping into a second bar. */
+  .controls {
+    flex-wrap: nowrap;
+  }
+
+  .chip {
+    padding: 0 var(--space-2);
+    font-size: 11px;
+  }
+
+  .chip.reduce-motion span {
+    display: none;
+  }
+
+  /* Phones are pinned to reduced quality already, so the picker is noise there.
+     It stays available on tablets and desktop. */
+  .chip.select {
+    display: none;
+  }
+
+  .mode-toggle {
+    white-space: nowrap;
+  }
+
+  .mode-toggle .full {
+    display: none;
+  }
+
+  .mode-toggle .short {
+    display: inline;
+  }
+
+  .actions .btn {
+    flex: 1 1 100%;
+  }
+
+  .join-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .notice {
+    left: var(--space-3);
+    right: var(--space-3);
+    width: auto;
+  }
 }
 </style>

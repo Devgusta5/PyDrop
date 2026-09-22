@@ -1,20 +1,37 @@
 @import './base.css';
 
 #app {
-  min-height: 100vh;
+  min-height: 100svh;
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
+  color: inherit;
 }
 
 button {
   cursor: pointer;
 }
 
-button:focus-visible,
-input:focus-visible + * {
-  outline: 2px solid var(--lime);
-  outline-offset: 4px;
+/* One focus treatment for the whole app, on the element itself rather than a sibling. */
+:where(button, input, select, a, [tabindex]):focus-visible {
+  outline: 2px solid var(--lime-flow);
+  outline-offset: 3px;
+}
+
+a {
+  color: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
