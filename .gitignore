@@ -1,6 +1,7 @@
 # === Python / Backend ===
 .venv/
 backend/.venv/
+backend/.env
 __pycache__/
 *.py[cod]
 *$py.class

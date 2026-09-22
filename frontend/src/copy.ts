@@ -82,22 +82,6 @@ const en = {
   otherDevice: 'OTHER DEVICE',
   thisDevice: 'THIS DEVICE',
 
-  // Immersive
-  enterImmersive: 'Enter immersive mode',
-  exitImmersive: 'Exit immersive',
-  enterShort: 'Immersive',
-  exitShort: 'Exit',
-  reduceMotion: 'Reduce motion',
-  motionReduced: 'Motion reduced',
-  quality: 'Quality',
-  qualityHigh: 'High',
-  qualityBalanced: 'Balanced',
-  qualityReduced: 'Reduced',
-  portalLabel: 'Temporary device portal',
-  enteringRoom: 'Entering the room…',
-  webglMissing: 'Immersive mode needs 3D graphics, which this browser cannot start.',
-  webglMissingAction: 'Everything still works in the standard view.',
-
   // QR
   scanQr: 'Scan QR code',
   scanQrDialog: 'Point your camera at the QR code on the other device.',
@@ -134,6 +118,7 @@ const en = {
   confirmLeave: 'A transfer is in progress. Leave anyway?',
   offline: 'You are offline.',
   offlineBody: 'PyDrop needs a connection to pair devices.',
+  transferCount: (count: number) => `${count} ${count === 1 ? 'transfer' : 'transfers'}`,
 }
 
 const pt: typeof en = {
@@ -206,21 +191,6 @@ const pt: typeof en = {
   otherDevice: 'OUTRO DISPOSITIVO',
   thisDevice: 'ESTE DISPOSITIVO',
 
-  enterImmersive: 'Entrar no modo imersivo',
-  exitImmersive: 'Sair do imersivo',
-  enterShort: 'Imersivo',
-  exitShort: 'Sair',
-  reduceMotion: 'Reduzir movimento',
-  motionReduced: 'Movimento reduzido',
-  quality: 'Qualidade',
-  qualityHigh: 'Alta',
-  qualityBalanced: 'Equilibrada',
-  qualityReduced: 'Reduzida',
-  portalLabel: 'Portal temporário de dispositivos',
-  enteringRoom: 'Entrando na sala…',
-  webglMissing: 'O modo imersivo precisa de gráficos 3D, que este navegador não conseguiu iniciar.',
-  webglMissingAction: 'Tudo continua funcionando na visão padrão.',
-
   scanQr: 'Escanear QR code',
   scanQrDialog: 'Aponte a câmera para o QR code no outro dispositivo.',
   cancelScan: 'Cancelar escaneamento',
@@ -254,6 +224,7 @@ const pt: typeof en = {
   confirmLeave: 'Uma transferência está em andamento. Sair mesmo assim?',
   offline: 'Você está sem conexão.',
   offlineBody: 'O PyDrop precisa de conexão para parear dispositivos.',
+  transferCount: (count: number) => `${count} ${count === 1 ? 'transferência' : 'transferências'}`,
 }
 
 export type Copy = typeof en

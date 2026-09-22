@@ -117,6 +117,15 @@ export async function createRoom(): Promise<CreateRoomResult> {
   return request<CreateRoomResult>('/rooms', { method: 'POST' })
 }
 
+export interface TransferStats {
+  completed_transfers: number
+}
+
+/** Global count of completed transfers, shown as a footer badge. (GET /stats) */
+export async function getTransferStats(): Promise<TransferStats> {
+  return request<TransferStats>('/stats')
+}
+
 /**
  * Connects to the signaling channel. The backend forwards these messages,
  * but never receives file bytes.

@@ -13,8 +13,11 @@ import time
 from contextlib import asynccontextmanager
 from collections import defaultdict, deque
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+load_dotenv()
 
 from . import rooms as rooms_mod
 from . import metrics as metrics_mod

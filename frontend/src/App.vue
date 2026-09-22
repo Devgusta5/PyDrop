@@ -3,14 +3,22 @@ import QrScanner from 'qr-scanner'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as api from './api'
 import { dictionaries, type Copy, type Language } from './copy'
-import type { PyDropScene, Quality, SceneState } from './scene'
 import PortalMark from './components/PortalMark.vue'
 import ConnectionField from './components/ConnectionField.vue'
 import TransferDock from './components/TransferDock.vue'
 import RoomQr from './components/RoomQr.vue'
 
 type View = 'start' | 'room' | 'connected'
-type AppState = SceneState
+type AppState =
+  | 'initial'
+  | 'creating-room'
+  | 'waiting'
+  | 'connected'
+  | 'selecting-file'
+  | 'file-ready'
+  | 'transferring'
+  | 'completed'
+  | 'error'
 type EntryMode = 'create' | 'join' | null
 /** Errors get a title + body + recovery action rather than a raw string. */
 interface AppError {
@@ -40,9 +48,6 @@ const transferPercent = ref(0)
 const receivePercent = ref(0)
 const isReceiving = ref(false)
 const incomingName = ref('')
-const immersiveMode = ref(false)
-const reduceMotion = ref(false)
-const renderQuality = ref<Quality>('balanced')
 const roomCode = ref('')
 const joinCode = ref('')
 const entryMode = ref<EntryMode>(null)
@@ -53,27 +58,22 @@ const notice = ref<AppError | null>(null)
 const isOffline = ref(false)
 // #7 Captured from beforeinstallprompt; null when already installed or unsupported.
 const installPrompt = ref<{ prompt: () => Promise<void> } | null>(null)
-const coreHovered = ref(false)
-const sceneMount = ref<HTMLElement | null>(null)
 const qrVideo = ref<HTMLVideoElement | null>(null)
 const joinInput = ref<HTMLInputElement | null>(null)
 const isScanningQr = ref(false)
-const hasWebGL = ref(true)
 const serverStatus = ref<'idle' | 'checking' | 'waking_up' | 'ready' | 'connecting_ws' | 'connected' | 'failed'>('idle')
 const serverElapsedSeconds = ref(0)
 const roomFull = ref(false)
+const completedTransfers = ref(0)
 const deviceConnectionStatus = ref<'connecting' | 'connected' | 'disconnected'>('connecting')
 
 let qrScanner: QrScanner | null = null
 let roomConnection: ReturnType<typeof api.connectRoomSocket> | null = null
 let directTransfer: api.DirectTransfer | null = null
-let scene: PyDropScene | null = null
 let reconnectTimer = 0
 let reconnectAttempts = 0
-let traversalTimer = 0
 let noticeTimer = 0
 let pendingDownloadUrl = 0
-let sceneTransferProgress = -1
 // Bumped on every deliberate (re)connect so a stale socket's disconnect cannot
 // trigger a reconnect loop for a connection we already tore down.
 let connectionGeneration = 0
@@ -152,7 +152,6 @@ function formatRoomCode(code: string) {
 
 function setAppState(state: AppState) {
   appState.value = state
-  syncScene()
 }
 
 function showError(title: string, body: string, action?: AppError['action']) {
@@ -172,78 +171,11 @@ function setLanguage() {
   document.documentElement.lang = language.value
 }
 
-function toggleImmersiveMode() {
-  immersiveMode.value = !immersiveMode.value
-  // Entering immersive while already connected replays the traversal.
-  if (immersiveMode.value && appState.value === 'connected') beginTraversal()
-  if (!immersiveMode.value && appState.value === 'entering-room') setAppState('connected')
-}
-
-function toggleReduceMotion() {
-  reduceMotion.value = !reduceMotion.value
-  syncScene()
-}
-
 function setDirection(mode: api.TransferMode) {
   if (direction.value === mode) return
   direction.value = mode
   if (mode === 'receive') selectedFile.value = null
   directTransfer?.setMode(mode)
-}
-
-// ---------------------------------------------------------------- 3D lifecycle
-
-function supportsWebGL() {
-  try {
-    const canvas = document.createElement('canvas')
-    return !!(canvas.getContext('webgl') || canvas.getContext('experimental-webgl'))
-  } catch {
-    return false
-  }
-}
-
-function syncScene() {
-  scene?.update({
-    state: appState.value,
-    quality: renderQuality.value,
-    reduceMotion: reduceMotion.value,
-    transferProgress: sceneTransferProgress,
-    transferDirection: direction.value,
-  })
-}
-
-async function mountScene() {
-  if (!immersiveMode.value || !hasWebGL.value || scene) return
-  await nextTick()
-  if (!sceneMount.value) return
-  // Three.js is ~600kB and only immersive mode needs it, so the standard flow
-  // never pays for it. Loaded on demand, when the user opts into the experience.
-  const { PyDropScene } = await import('./scene')
-  // The user may have left immersive mode while the chunk was in flight.
-  if (!immersiveMode.value || !sceneMount.value || scene) return
-  scene = new PyDropScene(
-    sceneMount.value,
-    () => { if (appState.value === 'initial') createRoom() },
-    (hovered) => { coreHovered.value = hovered },
-  )
-  syncScene()
-}
-
-function unmountScene() {
-  scene?.dispose()
-  scene = null
-  coreHovered.value = false
-}
-
-/** The authored moment: fly through the portal, then land inside the room. */
-function beginTraversal() {
-  window.clearTimeout(traversalTimer)
-  if (reduceMotion.value || !hasWebGL.value) {
-    setAppState('inside-room')
-    return
-  }
-  setAppState('entering-room')
-  traversalTimer = window.setTimeout(() => setAppState('inside-room'), 2400)
 }
 
 // ------------------------------------------------------------------ room flow
@@ -358,13 +290,15 @@ function connectToRoom() {
     // The backend broadcasts this on every peer close; nothing was listening.
     onUserLeft: () => {
       if (myGeneration !== connectionGeneration) return
-      deviceConnectionStatus.value = 'disconnected'
-      startPeerLeftCountdown()
+      handlePeerLost()
     },
     onSignal: (message) => {
       directTransfer?.handleSignal(message).catch(() =>
         showError(copy.value.transferFailed, copy.value.transferFailedBody),
       )
+    },
+    onTransferCount: (count) => {
+      completedTransfers.value = count
     },
     onDisconnect: () => {
       if (myGeneration !== connectionGeneration) return
@@ -413,6 +347,18 @@ function clearPeerLeft() {
   peerLeftSeconds.value = 0
 }
 
+// A phone backgrounding the tab to show its file picker can kill both the
+// signaling socket and the WebRTC channel. The socket reconnects on its own,
+// but the old peer connection is dead: drop it so the next onUserJoined/
+// onRoomState (sessions > 1) is free to renegotiate a fresh one instead of
+// being blocked by setupDirectTransfer's "already have one" guard.
+function handlePeerLost() {
+  directTransfer?.close()
+  directTransfer = null
+  deviceConnectionStatus.value = 'disconnected'
+  startPeerLeftCountdown()
+}
+
 function handleDevicesConnected(initiator: boolean) {
   clearPeerLeft()
   setupDirectTransfer(initiator)
@@ -420,8 +366,7 @@ function handleDevicesConnected(initiator: boolean) {
   deviceConnectionStatus.value = 'connecting'
   serverStatus.value = 'connected'
   reconnectAttempts = 0
-  if (immersiveMode.value) beginTraversal()
-  else setAppState('connected')
+  setAppState('connected')
 }
 
 function setupDirectTransfer(initiator: boolean) {
@@ -430,7 +375,6 @@ function setupDirectTransfer(initiator: boolean) {
     (message) => roomConnection?.send(message),
     () => {
       deviceConnectionStatus.value = 'connected'
-      if (appState.value === 'connected' && immersiveMode.value) beginTraversal()
     },
     (file, blob) => {
       const url = URL.createObjectURL(blob)
@@ -459,19 +403,15 @@ function setupDirectTransfer(initiator: boolean) {
       if (mode === 'receive') {
         isReceiving.value = true
         receivePercent.value = Math.round(progress * 100)
-        sceneTransferProgress = progress
-        syncScene()
         return
       }
       transferPercent.value = Math.round(progress * 100)
-      sceneTransferProgress = progress
-      syncScene()
     },
     () => showError(copy.value.transferFailed, copy.value.transferFailedBody),
     () => {
       if (view.value === 'connected') {
         isTransferring.value = false
-        deviceConnectionStatus.value = 'disconnected'
+        handlePeerLost()
       }
     },
     (mode) => { remoteDirection.value = mode },
@@ -551,7 +491,7 @@ function acceptFiles(files: File[]) {
   selectedFile.value = queue.value[0] ?? null
   transferComplete.value = false
   transferPercent.value = 0
-  setAppState(queue.value.length ? 'file-ready' : immersiveMode.value ? 'inside-room' : 'connected')
+  setAppState(queue.value.length ? 'file-ready' : 'connected')
 }
 
 function onFileSelected(event: Event) {
@@ -564,7 +504,7 @@ function onFileSelected(event: Event) {
 function removeQueued(index: number) {
   queue.value = queue.value.filter((_, i) => i !== index)
   selectedFile.value = queue.value[0] ?? null
-  if (!queue.value.length) setAppState(immersiveMode.value ? 'inside-room' : 'connected')
+  if (!queue.value.length) setAppState('connected')
 }
 
 function clearFile() {
@@ -572,7 +512,7 @@ function clearFile() {
   selectedFile.value = null
   transferPercent.value = 0
   transferComplete.value = false
-  setAppState(immersiveMode.value ? 'inside-room' : 'connected')
+  setAppState('connected')
 }
 
 function onDragOver(event: DragEvent) {
@@ -604,7 +544,6 @@ async function startTransfer() {
     for (const file of batch) {
       activeTransferName.value = file.name
       transferPercent.value = 0
-      sceneTransferProgress = 0
       await directTransfer.sendFile(file)
       shared.value = [
         { name: file.name, size: file.size, direction: 'sent', at: Date.now() },
@@ -630,7 +569,6 @@ function reset(force = false) {
   dismissNotice()
   connectionGeneration += 1
   window.clearTimeout(reconnectTimer)
-  window.clearTimeout(traversalTimer)
   window.clearTimeout(pendingDownloadUrl)
   clearPeerLeft()
   roomConnection?.disconnect()
@@ -651,7 +589,6 @@ function reset(force = false) {
   isReceiving.value = false
   transferPercent.value = 0
   receivePercent.value = 0
-  sceneTransferProgress = -1
   deviceConnectionStatus.value = 'connecting'
   serverStatus.value = 'idle'
   serverElapsedSeconds.value = 0
@@ -675,14 +612,6 @@ function handleNoticeAction(action: AppError['action']) {
 
 // ------------------------------------------------------------------ lifecycle
 
-watch([immersiveMode, hasWebGL], () => {
-  unmountScene()
-  mountScene()
-})
-
-watch(renderQuality, syncScene)
-
-
 async function installApp() {
   const event = installPrompt.value
   if (!event) return
@@ -698,49 +627,51 @@ const handleInstallPrompt = (event: Event) => {
 const handleOnline = () => { isOffline.value = false }
 const handleOffline = () => { isOffline.value = true }
 
+// A phone backgrounding the tab (e.g. to show the file picker) throttles our
+// timers, so the signaling socket's own retry budget can run out silently
+// while hidden. Coming back to the foreground is a much stronger signal that
+// it's worth trying again than a fixed number of background-timer retries.
+const handleVisibilityChange = () => {
+  if (document.visibilityState !== 'visible') return
+  if (view.value === 'start' || roomFull.value) return
+  if (serverStatus.value === 'connected' || serverStatus.value === 'connecting_ws') return
+  reconnectAttempts = 0
+  connectToRoom()
+}
+
 onMounted(() => {
-  hasWebGL.value = supportsWebGL()
-  reduceMotion.value = window.matchMedia('(prefers-reduced-motion: reduce)').matches
   isOffline.value = !navigator.onLine
   document.documentElement.lang = language.value
   window.addEventListener('beforeinstallprompt', handleInstallPrompt)
   window.addEventListener('appinstalled', () => { installPrompt.value = null })
   window.addEventListener('online', handleOnline)
   window.addEventListener('offline', handleOffline)
-  // Phones are the device that scans, so start them at reduced quality.
-  if (isMobile.value) renderQuality.value = 'reduced'
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 
   const roomFromUrl = new URLSearchParams(window.location.search).get('room')
   if (roomFromUrl) joinRoomByCode(roomFromUrl)
   else prepareBackend().catch(() => { serverStatus.value = 'failed' })
+
+  // The badge is optional decoration — never block startup on it.
+  api.getTransferStats().then((stats) => { completedTransfers.value = stats.completed_transfers }).catch(() => {})
 })
 
 onBeforeUnmount(() => {
-  unmountScene()
   stopQrScanner()
   roomConnection?.disconnect()
   directTransfer?.close()
   window.removeEventListener('beforeinstallprompt', handleInstallPrompt)
   window.removeEventListener('online', handleOnline)
   window.removeEventListener('offline', handleOffline)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
   window.clearTimeout(reconnectTimer)
-  window.clearTimeout(traversalTimer)
   window.clearTimeout(pendingDownloadUrl)
   window.clearTimeout(noticeTimer)
 })
 </script>
 
 <template>
-  <div class="shell" :class="{ immersive: immersiveMode }">
-    <!-- The 3D world sits behind everything and fills the viewport in immersive mode. -->
-    <div
-      v-if="immersiveMode && hasWebGL"
-      ref="sceneMount"
-      class="world"
-      :class="{ interactive: coreHovered }"
-      aria-hidden="true"
-    ></div>
-
+  <div class="shell">
     <header class="topbar">
       <button class="brand" type="button" @click="reset()">
         <PortalMark :size="30" />
@@ -768,88 +699,11 @@ onBeforeUnmount(() => {
           </span>
           {{ language === 'pt' ? 'EN' : 'PT' }}
         </button>
-
-        <template v-if="immersiveMode">
-          <button
-            class="chip reduce-motion"
-            type="button"
-            :aria-pressed="reduceMotion"
-            :aria-label="copy.reduceMotion"
-            :title="copy.reduceMotion"
-            @click="toggleReduceMotion"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
-              <circle cx="12" cy="12" r="7.5" />
-              <path v-if="reduceMotion" d="M8 12h8" stroke-linecap="round" />
-              <path v-else d="M12 8.5v7M8.5 12h7" stroke-linecap="round" />
-            </svg>
-            <span>{{ reduceMotion ? copy.motionReduced : copy.reduceMotion }}</span>
-          </button>
-          <label class="chip select">
-            <span class="visually-hidden">{{ copy.quality }}</span>
-            <select v-model="renderQuality">
-              <option value="high">{{ copy.qualityHigh }}</option>
-              <option value="balanced">{{ copy.qualityBalanced }}</option>
-              <option value="reduced">{{ copy.qualityReduced }}</option>
-            </select>
-          </label>
-        </template>
-
-        <button class="chip mode-toggle" type="button" @click="toggleImmersiveMode">
-          <!-- Phones get the short form; there is no room for the full phrase. -->
-          <span class="full">{{ immersiveMode ? copy.exitImmersive : copy.enterImmersive }}</span>
-          <span class="short">{{ immersiveMode ? copy.exitShort : copy.enterShort }}</span>
-        </button>
       </div>
     </header>
 
-    <!-- ------------------------------------------------ start (immersive) -->
-    <!-- The scene IS the interface here: no hero column, no 2D connection visual.
-         Controls sit low and quiet so the environment owns the viewport. -->
-    <main v-if="view === 'start' && immersiveMode" class="stage immersive-start">
-      <div class="core-console">
-        <p class="console-label">{{ copy.portalLabel }}</p>
-        <button
-          class="core-action"
-          type="button"
-          :disabled="isPreparingBackend || isOffline"
-          @click="createRoom"
-        >
-          {{ isPreparingBackend ? preparingLabel : copy.create }}
-        </button>
-        <button class="link" type="button" :aria-expanded="isJoinExpanded" @click="expandJoin">
-          {{ copy.join }}
-        </button>
-
-        <form v-if="isJoinExpanded" class="join compact" @submit.prevent="submitJoinCode">
-          <label for="immersive-room-code">{{ copy.codeLabel }}</label>
-          <div class="join-row">
-            <input
-              id="immersive-room-code"
-              ref="joinInput"
-              v-model="joinCode"
-              class="tabular"
-              inputmode="text"
-              autocomplete="off"
-              autocapitalize="characters"
-              spellcheck="false"
-              placeholder="ABCD1234"
-              maxlength="9"
-            />
-            <button
-              class="btn primary"
-              type="submit"
-              :disabled="normalizedJoinCode.length !== 8 || isPreparingBackend"
-            >
-              {{ copy.joinRoom }}
-            </button>
-          </div>
-        </form>
-      </div>
-    </main>
-
-    <!-- ------------------------------------------------- start (standard) -->
-    <main v-else-if="view === 'start'" class="stage start">
+    <!-- ------------------------------------------------- start -->
+    <main v-if="view === 'start'" class="stage start">
       <div class="pitch">
         <h1>{{ copy.headline }}</h1>
         <p class="lede">{{ copy.intro }}</p>
@@ -939,7 +793,6 @@ onBeforeUnmount(() => {
     <main
       v-else-if="view === 'room' && entryMode === 'join'"
       class="stage room joining"
-      :class="{ immersive: immersiveMode }"
     >
       <div class="room-copy" aria-live="polite">
         <h2>{{ copy.joiningRoom }}</h2>
@@ -952,7 +805,7 @@ onBeforeUnmount(() => {
       </div>
     </main>
 
-    <main v-else-if="view === 'room'" class="stage room" :class="{ immersive: immersiveMode }">
+    <main v-else-if="view === 'room'" class="stage room">
       <div class="room-copy" aria-live="polite">
         <h2>{{ appState === 'creating-room' ? preparingLabel : copy.roomReady }}</h2>
         <p class="lede">{{ copy.waitingBody }}</p>
@@ -986,26 +839,24 @@ onBeforeUnmount(() => {
         <button class="btn danger" type="button" @click="reset()">{{ copy.cancel }}</button>
       </div>
 
-      <!-- The QR is the fastest path on a phone, so it stays visible in both modes
-           on desktop; in immersive it sits smaller so the scene keeps the room. -->
+      <!-- The QR is the fastest path on a phone, so it stays visible on desktop too. -->
       <RoomQr
         v-if="joinUrl"
         :value="joinUrl"
         :label="copy.scanToJoin"
-        :size="immersiveMode ? 200 : 330"
+        :size="330"
       />
     </main>
 
     <!-- ------------------------------------------------------ connected -->
-    <main v-else class="stage connected" :class="{ 'on-world': immersiveMode }">
+    <main v-else class="stage connected">
       <div class="transfer-column">
       <div class="connected-head">
         <h2>{{ peerLeftAt ? copy.peerLeftTitle : transferComplete ? copy.complete : copy.connectedTitle }}</h2>
         <p class="lede">{{ peerLeftAt ? copy.peerLeftBody : transferComplete ? copy.arrived : copy.connectedBody }}</p>
       </div>
 
-      <!-- In standard mode the 2D field carries the connection; in immersive the 3D does. -->
-      <div v-if="!immersiveMode" class="visual">
+      <div class="visual">
         <ConnectionField
           :local-label="copy.thisDevice"
           :remote-label="copy.otherDevice"
@@ -1014,10 +865,6 @@ onBeforeUnmount(() => {
           :flow-direction="isReceiving ? 'receive' : 'send'"
         />
       </div>
-
-      <p v-else-if="appState === 'entering-room'" class="traversing" aria-live="polite">
-        {{ copy.enteringRoom }}
-      </p>
 
       <!-- #10 The peer really left: say so, and show how long the room lasts. -->
       <div v-if="peerLeftAt" class="left-card" role="alert">
@@ -1100,6 +947,7 @@ onBeforeUnmount(() => {
     </main>
 
     <footer class="credit">
+      <div class="transfer-badge" aria-live="polite"><span class="badge-dot"></span>{{ copy.transferCount(completedTransfers) }}</div>
       <a class="gh" href="https://github.com/Devgusta5/PyDrop" target="_blank" rel="noopener noreferrer">
         <svg viewBox="0 0 16 16" aria-hidden="true">
           <path fill="currentColor" d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38l-.01-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8 8 0 0 0 8 0Z" />
@@ -1120,12 +968,6 @@ onBeforeUnmount(() => {
       <p>{{ copy.installAppIosBody }}</p>
       <button class="btn ghost" type="button" @click="showIosInstallHint = false">{{ copy.close }}</button>
     </div>
-
-    <!-- WebGL missing: say what is lost and that nothing else is. -->
-    <p v-if="immersiveMode && !hasWebGL" class="webgl-note" role="status">
-      <strong>{{ copy.webglMissing }}</strong>
-      <span>{{ copy.webglMissingAction }}</span>
-    </p>
 
     <!-- ------------------------------------------------------- overlays -->
     <div v-if="isScanningQr" class="scanner" role="dialog" :aria-label="copy.scanQr">
@@ -1172,37 +1014,9 @@ onBeforeUnmount(() => {
     max(var(--space-5), env(safe-area-inset-bottom));
 }
 
-.world {
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  background: var(--deep-space);
-}
-
-.world.interactive {
-  cursor: pointer;
-}
-
-.world :deep(canvas) {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-/* A vignette so overlaid text always has ground, whatever the scene is doing. */
-.shell.immersive::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background: radial-gradient(ellipse at 50% 45%, transparent 38%, rgba(6, 9, 11, 0.86) 100%);
-}
-
 .topbar,
 .stage,
-.credit,
-.webgl-note {
+.credit {
   position: relative;
   z-index: 2;
 }
@@ -1268,50 +1082,6 @@ onBeforeUnmount(() => {
   transition: transform 100ms var(--ease-out);
 }
 
-.chip.reduce-motion {
-  gap: var(--space-2);
-}
-
-.chip.reduce-motion svg {
-  width: 15px;
-  height: 15px;
-  flex: none;
-}
-
-.chip.select {
-  padding: 0;
-}
-
-.chip.select select {
-  background: transparent;
-  border: 0;
-  padding: 0 var(--space-3);
-  height: 36px;
-  color: inherit;
-  font-size: 12px;
-}
-
-.chip.select select option {
-  background: var(--graphite);
-  color: var(--soft-white);
-}
-
-.mode-toggle {
-  color: var(--lime-flow);
-  border-color: var(--lime-edge);
-}
-
-.mode-toggle .short {
-  display: none;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .mode-toggle:hover {
-    color: var(--deep-space);
-    background: var(--lime-flow);
-    border-color: var(--lime-flow);
-  }
-}
 
 /* ------------------------------------------------------------------ stage */
 .stage {
@@ -1891,100 +1661,6 @@ h2 {
   justify-self: start;
 }
 
-/* ------------------------------------------------------- immersive start */
-/* No hero column here: the scene is the interface. The console sits low so the
-   core stays the centre of attention, and stays a real focusable control. */
-.immersive-start {
-  align-content: end;
-  justify-items: center;
-  padding-bottom: clamp(var(--space-6), 8vh, var(--space-8));
-  pointer-events: none;
-}
-
-.core-console {
-  pointer-events: auto;
-  display: grid;
-  justify-items: center;
-  gap: var(--space-3);
-  width: min(460px, 100%);
-  text-align: center;
-}
-
-.console-label {
-  color: var(--muted-gray);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-}
-
-/* Sized as a control, not a billboard: the 3D core is the hero, not this. */
-.core-action {
-  min-height: 52px;
-  padding: 0 var(--space-6);
-  background: color-mix(in srgb, var(--lime-flow) 14%, transparent);
-  border: 1px solid var(--lime-flow);
-  border-radius: var(--radius);
-  color: var(--lime-flow);
-  font-family: var(--font-brand);
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  backdrop-filter: blur(8px);
-  transition: background var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out),
-    transform 100ms var(--ease-out);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .core-action:hover:not(:disabled) {
-    background: var(--lime-flow);
-    color: var(--deep-space);
-  }
-}
-
-.core-action:active:not(:disabled) {
-  transform: scale(0.98);
-}
-
-.core-action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Panels floating over the world need their own ground to stay readable. */
-.immersive .code-plate,
-.join.compact {
-  background: color-mix(in srgb, var(--deep-space) 84%, transparent);
-  backdrop-filter: blur(14px);
-}
-
-.join.compact {
-  margin-top: var(--space-2);
-  width: 100%;
-  text-align: left;
-}
-
-/* In immersive the room readout is a quiet overlay, not a two-column page. */
-.room.immersive {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-content: end;
-  padding-bottom: clamp(var(--space-6), 7vh, var(--space-8));
-}
-
-.room.immersive h2 {
-  font-size: clamp(1.4rem, 2.4vw, 1.9rem);
-}
-
-.room.immersive .lede {
-  font-size: 14px;
-}
-
-.room.immersive .qr canvas {
-  width: 124px;
-  height: 124px;
-}
-
 /* ----------------------------------------------------------------- credit */
 .credit {
   display: flex;
@@ -2004,10 +1680,24 @@ h2 {
   opacity: 1;
 }
 
-/* Over the world the credit stays out of the console's way. */
-.shell.immersive .credit {
-  justify-content: center;
-  padding-top: var(--space-3);
+.transfer-badge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-right: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--quiet-border);
+  border-radius: var(--radius);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--coral-signal);
 }
 
 .credit a {
@@ -2020,21 +1710,6 @@ h2 {
 .credit a:hover {
   color: var(--lime-flow);
   text-decoration-color: currentColor;
-}
-
-.webgl-note {
-  display: grid;
-  gap: var(--space-1);
-  max-width: var(--shell-max);
-  margin: 0 auto;
-  padding: var(--space-4);
-  border: 1px solid var(--quiet-border);
-  border-radius: var(--radius);
-  font-size: 14px;
-}
-
-.webgl-note span {
-  color: var(--muted-gray);
 }
 
 /* --------------------------------------------------------------- overlays */
@@ -2180,8 +1855,7 @@ h2 {
     font-size: 19px;
   }
 
-  /* Phones keep the header on one row: the two scene controls become icon-width
-     and the mode toggle shortens, rather than wrapping into a second bar. */
+  /* Phones keep the header on one row. */
   .controls {
     flex-wrap: nowrap;
   }
@@ -2189,28 +1863,6 @@ h2 {
   .chip {
     padding: 0 var(--space-2);
     font-size: 11px;
-  }
-
-  .chip.reduce-motion span {
-    display: none;
-  }
-
-  /* Phones are pinned to reduced quality already, so the picker is noise there.
-     It stays available on tablets and desktop. */
-  .chip.select {
-    display: none;
-  }
-
-  .mode-toggle {
-    white-space: nowrap;
-  }
-
-  .mode-toggle .full {
-    display: none;
-  }
-
-  .mode-toggle .short {
-    display: inline;
   }
 
   .actions .btn {
