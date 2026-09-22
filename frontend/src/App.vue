@@ -633,7 +633,7 @@ const handleOffline = () => { isOffline.value = true }
 // it's worth trying again than a fixed number of background-timer retries.
 const handleVisibilityChange = () => {
   if (document.visibilityState !== 'visible') return
-  if (view.value === 'start' || roomFull.value) return
+  if (view.value === 'start' || !roomCode.value || roomFull.value) return
   if (serverStatus.value === 'connected' || serverStatus.value === 'connecting_ws') return
   reconnectAttempts = 0
   connectToRoom()

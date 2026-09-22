@@ -4,9 +4,10 @@
  * Owns no transfer logic — it emits intent and renders the state it is given.
  */
 import type { TransferMode } from '../api'
+import type { Copy } from '../copy'
 
 defineProps<{
-  copy: Record<string, string>
+  copy: Copy
   direction: TransferMode
   remoteDirection: TransferMode
   selectedFile: File | null
