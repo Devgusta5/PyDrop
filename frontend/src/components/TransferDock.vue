@@ -207,11 +207,18 @@ function formatBytes(bytes: number) {
   padding: var(--space-2) var(--space-4);
   min-height: 36px;
   transition: color var(--duration-fast) var(--ease-out),
-    background var(--duration-fast) var(--ease-out);
+    background var(--duration-fast) var(--ease-out),
+    transform 100ms var(--ease-out);
 }
 
-.mode button:hover:not(:disabled) {
-  color: var(--soft-white);
+@media (hover: hover) and (pointer: fine) {
+  .mode button:hover:not(:disabled) {
+    color: var(--soft-white);
+  }
+}
+
+.mode button:active:not(:disabled) {
+  transform: scale(0.96);
 }
 
 .mode button.active {
@@ -249,23 +256,37 @@ function formatBytes(bytes: number) {
   border-radius: var(--radius);
   border: 1px dashed var(--quiet-border);
   transition: border-color var(--duration-fast) var(--ease-out),
-    background var(--duration-fast) var(--ease-out);
+    background var(--duration-fast) var(--ease-out),
+    transform 220ms var(--ease-out);
 }
 
 .drop {
   cursor: pointer;
 }
 
-.drop:hover,
 .drop.staged {
   border-color: var(--lime-edge);
   background: var(--lime-wash);
 }
 
+@media (hover: hover) and (pointer: fine) {
+  .drop:hover {
+    border-color: var(--lime-edge);
+    background: var(--lime-wash);
+  }
+}
+
+/* Dragging a file over lifts the zone toward the cursor — the target
+   acknowledges the file before it is dropped. */
 .drop.over {
   border-style: solid;
   border-color: var(--lime-flow);
   background: var(--lime-wash);
+  transform: scale(1.012);
+}
+
+.drop.over .glyph {
+  transform: translateY(-2px) scale(1.06);
 }
 
 .drop.locked {
@@ -295,6 +316,10 @@ function formatBytes(bytes: number) {
 
 .glyph.coral {
   color: var(--coral-signal);
+}
+
+.glyph {
+  transition: transform 220ms var(--ease-out);
 }
 
 .glyph svg {
@@ -412,8 +437,15 @@ function formatBytes(bytes: number) {
     transform var(--duration-fast) var(--ease-out);
 }
 
-.send:hover:not(:disabled) {
-  transform: translateY(-1px);
+@media (hover: hover) and (pointer: fine) {
+  .send:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+}
+
+.send:active:not(:disabled) {
+  transform: scale(0.98);
+  transition-duration: 100ms;
 }
 
 /* Disabled reads as an inert surface rather than a dimmed lime button, which

@@ -88,6 +88,8 @@ export class PyDropScene {
   private pointerTarget = new THREE.Vector2()
   private raycaster = new THREE.Raycaster()
   private startedAt = performance.now()
+  /** 0 → 1 over the first moments: the environment assembles rather than cutting in. */
+  private reveal = 0
   /** 0 = in space, 1 = fully inside the room. Drives the whole traversal. */
   private traversal = 0
   private hovered = false
@@ -399,6 +401,10 @@ export class PyDropScene {
 
   private tick = (time: number) => {
     const elapsed = (time - this.startedAt) * 0.001
+    // Entering the environment: stars first, then the core, then the light.
+    // A cut would make the space feel like a picture that was already there.
+    this.reveal = this.input.reduceMotion ? 1 : Math.min(1, elapsed / 1.15)
+    const revealEase = 1 - Math.pow(1 - this.reveal, 3)
     const motion = !this.input.reduceMotion
     const state = this.input.state
     const wantsInside = INSIDE.includes(state)
@@ -442,7 +448,9 @@ export class PyDropScene {
       this.core.rotation.x = Math.sin(elapsed * 0.4) * 0.1
     }
     // The core dissolves as we pass through it, so it never clips the camera.
-    const coreFade = 1 - Math.min(1, eased * 1.6)
+    // The core arrives after the stars: revealEase is delayed and re-normalised.
+    const coreReveal = Math.max(0, Math.min(1, (revealEase - 0.25) / 0.75))
+    const coreFade = (1 - Math.min(1, eased * 1.6)) * coreReveal
     this.coreLoops.forEach((loop) => {
       const material = loop.material as THREE.MeshStandardMaterial
       material.transparent = true
@@ -459,8 +467,9 @@ export class PyDropScene {
       this.dust.scale.setScalar(converge)
       this.stars.rotation.y = elapsed * 0.005
     }
-    ;(this.dust.material as THREE.PointsMaterial).opacity = 0.55 * (1 - eased)
-    ;(this.stars.material as THREE.PointsMaterial).opacity = 0.9 * (1 - eased * 0.85)
+    ;(this.dust.material as THREE.PointsMaterial).opacity = 0.55 * (1 - eased) * coreReveal
+    // Stars lead the reveal: the space exists before anything is built in it.
+    ;(this.stars.material as THREE.PointsMaterial).opacity = 0.9 * (1 - eased * 0.85) * revealEase
 
     // The other device approaches once it joins.
     const linked = state === 'connected' || wantsInside || traversing

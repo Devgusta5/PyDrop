@@ -104,10 +104,17 @@ const peerModeMessage = computed(() => {
   if (bothReceiving.value) return copy.value.bothReceiving
   return remoteDirection.value === 'receive' ? copy.value.otherIsReceiving : copy.value.otherIsSending
 })
-/** What the connection field should be showing right now. */
-const connectionPhase = computed<'idle' | 'waiting' | 'linked'>(() => {
+/**
+ * The story the connection field tells: alone → reaching out → found, forming →
+ * established. Each phase maps to something the app genuinely knows, so the
+ * animation reports real state rather than decorating.
+ */
+const connectionPhase = computed<'idle' | 'searching' | 'linking' | 'linked'>(() => {
   if (deviceConnectionStatus.value === 'connected') return 'linked'
-  if (view.value !== 'start' || isPreparingBackend.value) return 'waiting'
+  // The other device is in the room and the data channel is coming up.
+  if (view.value === 'connected') return 'linking'
+  // A room exists and we are waiting for someone, or the server is waking.
+  if (view.value === 'room' || isPreparingBackend.value) return 'searching'
   return 'idle'
 })
 const liveFlow = computed(() => {
@@ -784,9 +791,11 @@ onBeforeUnmount(() => {
           </button>
         </form>
 
-        <!-- The free backend sleeps; say so rather than looking broken. -->
+        <!-- The free backend sleeps; say so rather than looking broken. A sweep
+             rather than a spinner: it reads as reaching out, and the elapsed
+             seconds prove it is still working. -->
         <div v-if="isPreparingBackend" class="waking" aria-live="polite">
-          <span class="pulse" aria-hidden="true"></span>
+          <span class="sweep" aria-hidden="true"></span>
           <div>
             <strong>{{ serverStatus === 'waking_up' ? copy.startingServer : copy.checkingServer }}</strong>
             <small v-if="serverStatus === 'waking_up'">{{ copy.startingServerBody }}</small>
@@ -816,10 +825,20 @@ onBeforeUnmount(() => {
           <span class="code-label">{{ copy.codeLabel }}</span>
           <strong class="code tabular">{{ displayRoomCode }}</strong>
           <div class="code-actions">
-            <button class="btn ghost" type="button" @click="copyRoomCode">
-              {{ copy.copyCode }}
+            <button class="btn ghost copy" :class="{ done: copyFeedback }" type="button" @click="copyRoomCode">
+              <!-- The icon swaps to a tick in place: the button itself reports
+                   the result, rather than a message appearing beside it. -->
+              <span class="copy-icon" aria-hidden="true">
+                <svg v-if="!copyFeedback" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                  <rect x="9" y="9" width="11" height="11" rx="2" />
+                  <path d="M5 15V6a2 2 0 0 1 2-2h8" stroke-linecap="round" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path class="tick" d="M5 12.5l4.5 4.5L19 7" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </span>
+              {{ copyFeedback || copy.copyCode }}
             </button>
-            <span class="copy-feedback" aria-live="polite">{{ copyFeedback }}</span>
           </div>
         </div>
 
@@ -848,7 +867,7 @@ onBeforeUnmount(() => {
         <ConnectionField
           :local-label="copy.thisDevice"
           :remote-label="copy.otherDevice"
-          :phase="deviceConnectionStatus === 'connected' ? 'linked' : 'waiting'"
+          :phase="connectionPhase"
           :flow="liveFlow"
           :flow-direction="isReceiving ? 'receive' : 'send'"
         />
@@ -1035,9 +1054,16 @@ onBeforeUnmount(() => {
     border-color var(--duration-fast) var(--ease-out);
 }
 
-.chip:hover {
-  color: var(--soft-white);
-  border-color: var(--muted-gray);
+@media (hover: hover) and (pointer: fine) {
+  .chip:hover {
+    color: var(--soft-white);
+    border-color: var(--muted-gray);
+  }
+}
+
+.chip:active {
+  transform: scale(0.96);
+  transition: transform 100ms var(--ease-out);
 }
 
 .chip.reduce-motion {
@@ -1077,10 +1103,12 @@ onBeforeUnmount(() => {
   display: none;
 }
 
-.mode-toggle:hover {
-  color: var(--deep-space);
-  background: var(--lime-flow);
-  border-color: var(--lime-flow);
+@media (hover: hover) and (pointer: fine) {
+  .mode-toggle:hover {
+    color: var(--deep-space);
+    background: var(--lime-flow);
+    border-color: var(--lime-flow);
+  }
 }
 
 /* ------------------------------------------------------------------ stage */
@@ -1160,12 +1188,23 @@ h2 {
   color: var(--soft-white);
 }
 
-.btn.ghost:hover {
-  border-color: var(--muted-gray);
+@media (hover: hover) and (pointer: fine) {
+  .btn.ghost:hover {
+    border-color: var(--muted-gray);
+  }
 }
 
-.btn:hover:not(:disabled) {
-  transform: translateY(-1px);
+/* Hover lifts only where a pointer can actually hover; touch fires it on tap. */
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+  }
+}
+
+/* Press feedback: the interface confirms it heard you, instantly. */
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+  transition-duration: 100ms;
 }
 
 .btn:disabled {
@@ -1263,6 +1302,37 @@ h2 {
   margin-top: 2px;
 }
 
+/* A signal sweeping outward — the shape of reaching for something, not a
+   spinner going nowhere. */
+.sweep {
+  position: relative;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--lime-flow);
+}
+
+.sweep::before,
+.sweep::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid var(--lime-flow);
+  animation: sweep 2s cubic-bezier(0.23, 1, 0.32, 1) infinite;
+}
+
+.sweep::after {
+  animation-delay: 1s;
+}
+
+@keyframes sweep {
+  from { transform: scale(1); opacity: 0.7; }
+  to { transform: scale(3.4); opacity: 0; }
+}
+
 .pulse {
   flex: none;
   width: 8px;
@@ -1332,9 +1402,44 @@ h2 {
   flex-wrap: wrap;
 }
 
-.copy-feedback {
+.copy {
+  gap: var(--space-2);
+}
+
+/* Success is the button turning green, not a message appearing next to it. */
+.copy.done {
+  border-color: var(--transfer-green);
   color: var(--transfer-green);
-  font-size: 13px;
+}
+
+.copy-icon {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.copy-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* The tick draws itself on, so the confirmation has a moment of its own. */
+.tick {
+  stroke-dasharray: 22;
+  stroke-dashoffset: 22;
+  animation: tick 260ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+}
+
+@keyframes tick {
+  to { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tick {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
 }
 
 .waiting-row {
@@ -1451,12 +1556,19 @@ h2 {
   letter-spacing: 0.02em;
   backdrop-filter: blur(8px);
   transition: background var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
+    color var(--duration-fast) var(--ease-out),
+    transform 100ms var(--ease-out);
 }
 
-.core-action:hover:not(:disabled) {
-  background: var(--lime-flow);
-  color: var(--deep-space);
+@media (hover: hover) and (pointer: fine) {
+  .core-action:hover:not(:disabled) {
+    background: var(--lime-flow);
+    color: var(--deep-space);
+  }
+}
+
+.core-action:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 .core-action:disabled {
@@ -1605,6 +1717,14 @@ h2 {
   border: 1px solid rgba(255, 89, 100, 0.55);
   border-radius: var(--radius);
   box-shadow: 0 18px 50px -12px rgba(0, 0, 0, 0.66);
+  /* Enters from where it lives — the bottom edge — so the motion explains
+     where it came from and where a dismiss would send it. */
+  transition: opacity 260ms var(--ease-out), transform 260ms var(--ease-out);
+
+  @starting-style {
+    opacity: 0;
+    transform: translateY(12px);
+  }
 }
 
 .notice-text {
