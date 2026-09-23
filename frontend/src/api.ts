@@ -149,12 +149,21 @@ export function connectRoomSocket(
   const socket = new WebSocket(`${signalingUrl}/rooms/${encodeURIComponent(code)}/ws`)
   const pending: SignalingMessage[] = []
 
+  // Restrictive networks (school/corporate proxies, some carriers) often block
+  // wss:// while allowing https://. Without this, a blocked socket never fires
+  // 'open' or 'close' and the caller waits forever. Force it into the normal
+  // close/reconnect path instead.
+  const openTimeout = window.setTimeout(() => {
+    if (socket.readyState === WebSocket.CONNECTING) socket.close()
+  }, 10_000)
+
   const send = (message: SignalingMessage) => {
     if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message))
     else pending.push(message)
   }
 
   socket.addEventListener('open', () => {
+    window.clearTimeout(openTimeout)
     pending.splice(0).forEach((message) => socket.send(JSON.stringify(message)))
   })
 
@@ -189,6 +198,7 @@ export function connectRoomSocket(
   })
 
   socket.addEventListener('close', (event) => {
+    window.clearTimeout(openTimeout)
     handlers.onClose?.(event.code, event.reason)
     handlers.onDisconnect?.()
   })
