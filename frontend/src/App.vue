@@ -84,10 +84,15 @@ const ROOM_LIFETIME_SECONDS = 60 * 60
 const copy = computed<Copy>(() => dictionaries[language.value])
 
 const isMobile = computed(() => /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(navigator.userAgent))
-// iOS never fires beforeinstallprompt; offer the manual "Add to Home Screen" steps instead.
 const isIos = /iPhone|iPad|iPod/i.test(navigator.userAgent)
 const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator as unknown as { standalone?: boolean }).standalone === true
-const showIosInstallHint = ref(false)
+const showInstallHint = ref(false)
+// iOS has no beforeinstallprompt at all, and Chrome only fires it after its own
+// engagement heuristics, so the button can't wait for the event to exist.
+const canOfferInstall = computed(() => isMobile.value && !isStandalone)
+const installHintBody = computed(() =>
+  isIos ? copy.value.installAppIosBody : copy.value.installAppAndroidBody,
+)
 const isPreparingBackend = computed(() =>
   ['checking', 'waking_up', 'connecting_ws'].includes(serverStatus.value),
 )
@@ -614,7 +619,12 @@ function handleNoticeAction(action: AppError['action']) {
 
 async function installApp() {
   const event = installPrompt.value
-  if (!event) return
+  // Without a captured prompt there is no way to open the native install flow,
+  // so show where the browser keeps it instead of doing nothing.
+  if (!event) {
+    showInstallHint.value = true
+    return
+  }
   installPrompt.value = null
   await event.prompt()
 }
@@ -652,9 +662,21 @@ onMounted(() => {
   if (roomFromUrl) joinRoomByCode(roomFromUrl)
   else prepareBackend().catch(() => { serverStatus.value = 'failed' })
 
-  // The badge is optional decoration — never block startup on it.
-  api.getTransferStats().then((stats) => { completedTransfers.value = stats.completed_transfers }).catch(() => {})
+  // The badge is optional decoration — never block startup on it. It still has
+  // to wait for the backend, or a sleeping Render answers nothing and the
+  // count stays at zero for the whole visit.
+  loadTransferStats()
 })
+
+async function loadTransferStats() {
+  try {
+    await api.ensureBackendReady()
+    const stats = await api.getTransferStats()
+    completedTransfers.value = stats.completed_transfers
+  } catch {
+    // Leave the badge at its current value; the socket updates it later.
+  }
+}
 
 onBeforeUnmount(() => {
   stopQrScanner()
@@ -954,19 +976,16 @@ onBeforeUnmount(() => {
         </svg>
         <span>Devgusta5</span>
       </a>
-      <!-- #7 Only appears when the browser says the app is installable. -->
-      <button v-if="installPrompt" class="install" type="button" @click="installApp">
-        {{ copy.installApp }}
-      </button>
-      <!-- iOS has no beforeinstallprompt event; show manual steps instead. -->
-      <button v-else-if="isIos && !isStandalone" class="install" type="button" @click="showIosInstallHint = true">
+      <!-- #7 Shown on any phone that isn't already running the installed app:
+           the native prompt when the browser offered one, steps otherwise. -->
+      <button v-if="canOfferInstall || installPrompt" class="install" type="button" @click="installApp">
         {{ copy.installApp }}
       </button>
     </footer>
 
-    <div v-if="showIosInstallHint" class="scanner" role="dialog" :aria-label="copy.installApp">
-      <p>{{ copy.installAppIosBody }}</p>
-      <button class="btn ghost" type="button" @click="showIosInstallHint = false">{{ copy.close }}</button>
+    <div v-if="showInstallHint" class="scanner" role="dialog" :aria-label="copy.installApp">
+      <p>{{ installHintBody }}</p>
+      <button class="btn ghost" type="button" @click="showInstallHint = false">{{ copy.close }}</button>
     </div>
 
     <!-- ------------------------------------------------------- overlays -->
