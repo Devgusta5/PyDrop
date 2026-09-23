@@ -77,6 +77,9 @@ const serverElapsedSeconds = ref(0)
 const roomFull = ref(false)
 const completedTransfers = ref(0)
 const deviceConnectionStatus = ref<'connecting' | 'connected' | 'disconnected'>('connecting')
+// A long wait with no peer is often an ad blocker or privacy extension
+// blocking WebRTC/WebSockets rather than the other device being slow.
+const isLongWait = ref(false)
 
 let qrScanner: QrScanner | null = null
 let roomConnection: ReturnType<typeof api.connectRoomSocket> | null = null
@@ -84,6 +87,7 @@ let directTransfer: api.DirectTransfer | null = null
 let reconnectTimer = 0
 let reconnectAttempts = 0
 let noticeTimer = 0
+let longWaitTimer = 0
 // Bumped on every deliberate (re)connect so a stale socket's disconnect cannot
 // trigger a reconnect loop for a connection we already tore down.
 let connectionGeneration = 0
@@ -174,6 +178,19 @@ function dismissNotice() {
   notice.value = null
 }
 
+const LONG_WAIT_MS = 25_000
+
+function startLongWaitTimer() {
+  window.clearTimeout(longWaitTimer)
+  isLongWait.value = false
+  longWaitTimer = window.setTimeout(() => { isLongWait.value = true }, LONG_WAIT_MS)
+}
+
+function stopLongWaitTimer() {
+  window.clearTimeout(longWaitTimer)
+  isLongWait.value = false
+}
+
 function setLanguage() {
   language.value = language.value === 'en' ? 'pt' : 'en'
   document.documentElement.lang = language.value
@@ -200,12 +217,14 @@ async function prepareBackend() {
 /** Shared tail of every room-entry path: prepare the backend, then connect. */
 async function connectRoom(beforeConnect?: () => Promise<void>) {
   setAppState('creating-room')
+  startLongWaitTimer()
   try {
     await prepareBackend()
     await beforeConnect?.()
     setAppState('waiting')
     connectToRoom()
   } catch {
+    stopLongWaitTimer()
     serverStatus.value = 'failed'
     setAppState('error')
     showError(copy.value.unableToConnectTitle, copy.value.unableToConnectBody, 'retry')
@@ -375,6 +394,7 @@ function beginReconnecting() {
 function handleDevicesConnected(initiator: boolean) {
   clearPeerLeft()
   dismissNotice()
+  stopLongWaitTimer()
   setupDirectTransfer(initiator)
   view.value = 'connected'
   deviceConnectionStatus.value = 'connecting'
@@ -614,6 +634,7 @@ function reset(force = false) {
   dismissNotice()
   connectionGeneration += 1
   window.clearTimeout(reconnectTimer)
+  stopLongWaitTimer()
   clearPeerLeft()
   roomConnection?.disconnect()
   directTransfer?.close()
@@ -740,6 +761,7 @@ onBeforeUnmount(() => {
   window.clearInterval(reconnectStageTimer)
   window.clearTimeout(noticeTimer)
   window.clearTimeout(noteSendTimer)
+  window.clearTimeout(longWaitTimer)
   revokeSharedUrls()
 })
 </script>
@@ -863,6 +885,7 @@ onBeforeUnmount(() => {
           <span class="pulse" aria-hidden="true"></span>
           <span class="tabular">{{ displayRoomCode }}</span>
         </div>
+        <p v-if="isLongWait" class="hint" role="status">{{ copy.longWaitHint }}</p>
         <button class="btn danger" type="button" @click="reset()">{{ copy.cancel }}</button>
       </div>
     </main>
@@ -896,6 +919,7 @@ onBeforeUnmount(() => {
           <span>{{ copy.waiting }}</span>
         </div>
 
+        <p v-if="isLongWait" class="hint" role="status">{{ copy.longWaitHint }}</p>
         <button class="btn danger" type="button" @click="reset()">{{ copy.cancel }}</button>
       </div>
 
@@ -1543,6 +1567,14 @@ h2 {
 
 .waiting-row .pulse {
   margin-top: 0;
+}
+
+.hint {
+  color: var(--muted-gray);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: var(--measure);
+  margin-top: var(--space-4);
 }
 
 .qr {

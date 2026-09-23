@@ -53,6 +53,7 @@ const en = {
   roomReady: 'Your room is ready',
   waiting: 'Waiting for another device',
   waitingBody: 'Share the code or scan the QR on your other device.',
+  longWaitHint: 'Taking a while? An ad blocker or privacy extension can block the connection — try disabling it for this site.',
   joiningBody: 'Connecting you to the room…',
   connectedTitle: 'Another device joined',
   connectedBody: 'Connected and ready',
@@ -131,7 +132,7 @@ const en = {
   // Errors — each names the problem and what to do next.
   unableToConnect: 'We could not reach the server.',
   unableToConnectTitle: 'Could not reach the server',
-  unableToConnectBody: 'Check your connection and try again.',
+  unableToConnectBody: 'Check your connection and try again. An ad blocker or privacy extension can also block this — try disabling it for this site.',
   roomFull: 'This room already has two devices.',
   roomFullBody: 'Close PyDrop on one of them, or create a new room.',
   roomExpired: 'This room is no longer available.',
@@ -205,6 +206,7 @@ const pt: typeof en = {
   roomReady: 'Sua sala está pronta',
   waiting: 'Aguardando outro dispositivo',
   waitingBody: 'Compartilhe o código ou escaneie o QR no seu outro dispositivo.',
+  longWaitHint: 'Demorando muito? Um bloqueador de anúncios ou extensão de privacidade pode estar bloqueando a conexão — tente desativá-lo para este site.',
   joiningBody: 'Conectando você à sala…',
   connectedTitle: 'Outro dispositivo entrou',
   connectedBody: 'Conectado e pronto',
@@ -276,7 +278,7 @@ const pt: typeof en = {
 
   unableToConnect: 'Não conseguimos falar com o servidor.',
   unableToConnectTitle: 'Não foi possível alcançar o servidor',
-  unableToConnectBody: 'Verifique sua conexão e tente novamente.',
+  unableToConnectBody: 'Verifique sua conexão e tente novamente. Um bloqueador de anúncios ou extensão de privacidade também pode causar isso — tente desativá-lo para este site.',
   roomFull: 'Esta sala já tem dois dispositivos.',
   roomFullBody: 'Feche o PyDrop em um deles, ou crie uma nova sala.',
   roomExpired: 'Esta sala não está mais disponível.',
