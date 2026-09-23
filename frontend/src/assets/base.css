@@ -63,6 +63,10 @@ html {
 
 body {
   min-height: 100svh;
+  /* Any transient overflow (a long filename, a mid-transition element) would
+     otherwise push the viewport wider for a frame; on mobile that reads as a
+     zoom/pan snapping back. Nothing in this layout needs horizontal scroll. */
+  overflow-x: hidden;
   color: var(--soft-white);
   background: var(--deep-space);
   line-height: 1.55;

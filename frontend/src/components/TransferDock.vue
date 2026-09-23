@@ -505,9 +505,16 @@ function formatBytes(bytes: number) {
   height: 14px;
 }
 
+/* Eases into the layout rather than snapping in, so the meter appearing
+   mid-transfer does not read as a sudden jump on the page around it. */
 .meter {
   display: grid;
   gap: var(--space-2);
+  transition: opacity 200ms var(--ease-out);
+
+  @starting-style {
+    opacity: 0;
+  }
 }
 
 .meter-head {

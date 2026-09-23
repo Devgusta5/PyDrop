@@ -328,6 +328,10 @@ watch(() => props.phase, start)
   width: 100%;
   aspect-ratio: 400 / 170;
   min-height: 190px;
+  /* The pointer parallax is a desktop-hover affordance (gated by @media
+     hover below); on touch it has no purpose, and left unset it can compete
+     with the page's own scroll gesture and cause a momentary jump. */
+  touch-action: pan-y;
 }
 
 canvas {
