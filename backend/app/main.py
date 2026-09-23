@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from collections import defaultdict, deque
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
@@ -86,8 +86,6 @@ def create_room(request: Request):
     while attempts and now - attempts[0] >= ROOM_CREATION_WINDOW_SECONDS:
         attempts.popleft()
     if len(attempts) >= ROOM_CREATION_LIMIT:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=429, detail="Too many room creation attempts")
     attempts.append(now)
     room = rooms_mod.create_room()

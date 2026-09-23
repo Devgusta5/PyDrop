@@ -1,8 +1,11 @@
 import unittest
 from unittest.mock import patch
 
-from app import rooms
-from app.ws import _is_valid_signal
+from fastapi.testclient import TestClient
+
+from app import metrics, rooms
+from app.main import app
+from app.ws import _is_valid_signal, counted_transfer_ids
 
 
 class RoomSecurityTests(unittest.TestCase):
@@ -63,10 +66,6 @@ class SignalingHandshakeTests(unittest.TestCase):
         rooms.rooms.clear()
 
     def test_two_devices_connect_and_signaling_is_forwarded(self):
-        from fastapi.testclient import TestClient
-
-        from app.main import app
-
         client = TestClient(app)
         code = client.post("/rooms").json()["code"]
 
@@ -86,12 +85,6 @@ class SignalingHandshakeTests(unittest.TestCase):
                 self.assertEqual(first.receive_json()["type"], "offer")
 
     def test_same_transfer_is_counted_once_when_both_peers_report_it(self):
-        from fastapi.testclient import TestClient
-
-        from app import metrics
-        from app.main import app
-        from app.ws import counted_transfer_ids
-
         counted_transfer_ids.clear()
         client = TestClient(app)
         code = client.post("/rooms").json()["code"]

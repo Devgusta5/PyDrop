@@ -185,6 +185,21 @@ async function prepareBackend() {
   })
 }
 
+/** Shared tail of every room-entry path: prepare the backend, then connect. */
+async function connectRoom(beforeConnect?: () => Promise<void>) {
+  setAppState('creating-room')
+  try {
+    await prepareBackend()
+    await beforeConnect?.()
+    setAppState('waiting')
+    connectToRoom()
+  } catch {
+    serverStatus.value = 'failed'
+    setAppState('error')
+    showError(copy.value.unableToConnectTitle, copy.value.unableToConnectBody, 'retry')
+  }
+}
+
 async function createRoom() {
   if (isOffline.value) {
     showError(copy.value.offline, copy.value.offlineBody)
@@ -193,20 +208,12 @@ async function createRoom() {
   entryMode.value = 'create'
   direction.value = 'receive'
   view.value = 'room'
-  setAppState('creating-room')
   copyFeedback.value = ''
   dismissNotice()
-  try {
-    await prepareBackend()
+  await connectRoom(async () => {
     const result = await api.createRoom()
     roomCode.value = result.code
-    setAppState('waiting')
-    connectToRoom()
-  } catch {
-    serverStatus.value = 'failed'
-    setAppState('error')
-    showError(copy.value.unableToConnectTitle, copy.value.unableToConnectBody, 'retry')
-  }
+  })
 }
 
 async function joinRoomByCode(rawCode: string) {
@@ -222,17 +229,8 @@ async function joinRoomByCode(rawCode: string) {
   entryMode.value = 'join'
   roomCode.value = code
   view.value = 'room'
-  setAppState('creating-room')
   dismissNotice()
-  try {
-    await prepareBackend()
-    setAppState('waiting')
-    connectToRoom()
-  } catch {
-    serverStatus.value = 'failed'
-    setAppState('error')
-    showError(copy.value.unableToConnectTitle, copy.value.unableToConnectBody, 'retry')
-  }
+  await connectRoom()
 }
 
 function submitJoinCode() {
@@ -252,16 +250,7 @@ async function retryConnection() {
     await createRoom()
     return
   }
-  setAppState('creating-room')
-  try {
-    await prepareBackend()
-    setAppState('waiting')
-    connectToRoom()
-  } catch {
-    serverStatus.value = 'failed'
-    setAppState('error')
-    showError(copy.value.unableToConnectTitle, copy.value.unableToConnectBody, 'retry')
-  }
+  await connectRoom()
 }
 
 function connectToRoom() {
