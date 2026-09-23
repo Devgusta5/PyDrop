@@ -84,3 +84,34 @@ class SignalingHandshakeTests(unittest.TestCase):
 
                 second.send_json({"type": "offer", "description": {"sdp": "x", "type": "offer"}})
                 self.assertEqual(first.receive_json()["type"], "offer")
+
+    def test_same_transfer_is_counted_once_when_both_peers_report_it(self):
+        from fastapi.testclient import TestClient
+
+        from app import metrics
+        from app.main import app
+        from app.ws import counted_transfer_ids
+
+        counted_transfer_ids.clear()
+        client = TestClient(app)
+        code = client.post("/rooms").json()["code"]
+        before = metrics.get_transfer_count()
+
+        with client.websocket_connect(f"/rooms/{code}/ws") as first:
+            first.receive_json()
+            with client.websocket_connect(f"/rooms/{code}/ws") as second:
+                second.receive_json()
+                first.receive_json()
+
+                # Both peers report the same completed transfer.
+                first.send_json({"type": "transfer-completed", "transfer_id": "abc"})
+                self.assertEqual(first.receive_json(), {"type": "transfer-count", "count": before + 1})
+                second.receive_json()
+
+                second.send_json({"type": "transfer-completed", "transfer_id": "abc"})
+                # The duplicate is ignored, so a later distinct transfer proves
+                # the counter advanced by exactly one.
+                second.send_json({"type": "transfer-completed", "transfer_id": "def"})
+                self.assertEqual(second.receive_json(), {"type": "transfer-count", "count": before + 2})
+
+        self.assertEqual(metrics.get_transfer_count(), before + 2)

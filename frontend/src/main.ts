@@ -13,4 +13,14 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
       // An unavailable service worker must never break the app itself.
     })
   })
+
+  // A new worker calls skipWaiting/claim, so it takes over this page while the
+  // page is still running the previous build's JS. Reload once so the two match
+  // — without this, a stale shell can survive every visit until data is cleared.
+  let reloading = false
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloading) return
+    reloading = true
+    window.location.reload()
+  })
 }

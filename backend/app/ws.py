@@ -22,12 +22,18 @@ from . import metrics as metrics_mod
 router = APIRouter()
 MAX_ROOM_CONNECTIONS = 2
 MAX_SIGNAL_MESSAGE_BYTES = 64 * 1024
-MAX_SIGNAL_MESSAGES = 30
+# A single ICE negotiation already sends dozens of candidates, and a
+# reconnecting peer renegotiates from scratch, so this has room to spare.
+MAX_SIGNAL_MESSAGES = 150
 SIGNAL_RATE_WINDOW_SECONDS = 10
 SIGNAL_TYPES = {"offer", "answer", "ice-candidate", "transfer-completed"}
 
 # code -> set de conexões websocket ativas ("quem está ouvindo esse room")
 room_connections: dict[str, set[WebSocket]] = {}
+
+# code -> ids de transferências já contadas nesse room. Ambos os peers relatam
+# a mesma transferência, então sem isso cada arquivo contaria duas vezes.
+counted_transfer_ids: dict[str, set[str]] = {}
 
 
 def _subscribe(code: str, ws: WebSocket) -> None:
@@ -67,7 +73,9 @@ def _is_valid_signal(message: object) -> bool:
     if message_type not in SIGNAL_TYPES:
         return False
     if message_type == "transfer-completed":
-        return isinstance(message.get("transfer_id"), str) and 1 <= len(message["transfer_id"]) <= 100
+        # An empty id is tolerated (older clients omit it): it just can't be
+        # de-duplicated. Dropping the whole socket over it would be far worse.
+        return isinstance(message.get("transfer_id"), str) and len(message["transfer_id"]) <= 100
     payload_key = "candidate" if message_type == "ice-candidate" else "description"
     return isinstance(message.get(payload_key), dict)
 
@@ -121,6 +129,14 @@ async def handle_room_ws(ws: WebSocket, code: str) -> None:
                 await ws.close(code=1008, reason="Invalid signaling message")
                 return
             if message["type"] == "transfer-completed":
+                # Both peers can report the same transfer, and a reconnecting
+                # peer may report one again: count each id at most once.
+                transfer_id = message["transfer_id"]
+                if transfer_id:
+                    counted = counted_transfer_ids.setdefault(code, set())
+                    if transfer_id in counted:
+                        continue
+                    counted.add(transfer_id)
                 count = metrics_mod.record_transfer()
                 await _broadcast(code, {"type": "transfer-count", "count": count})
             else:
@@ -129,6 +145,8 @@ async def handle_room_ws(ws: WebSocket, code: str) -> None:
         pass
     finally:
         _unsubscribe(code, ws)
+        if not _sessions_count(code):
+            counted_transfer_ids.pop(code, None)
         await _broadcast(code, {"type": "user_left", "sessions": _sessions_count(code)})
 
 
