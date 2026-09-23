@@ -86,16 +86,14 @@ function formatBytes(bytes: number) {
     >
       <label v-if="!queue.length" class="drop-invite">
         <input type="file" multiple :disabled="isTransferring" @change="$emit('selectFile', $event)" />
-        <span class="glyph" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <span class="choose-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
             <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke-linecap="round" stroke-linejoin="round" />
             <path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15" stroke-linecap="round" />
           </svg>
+          {{ copy.chooseFiles }}
         </span>
-        <span class="label">
-          <strong>{{ copy.chooseFiles }}</strong>
-          <small>{{ copy.dropHintMulti }}</small>
-        </span>
+        <small>{{ copy.dragAlternative }}</small>
       </label>
 
       <template v-else>
@@ -317,7 +315,7 @@ function formatBytes(bytes: number) {
   transform: scale(1.012);
 }
 
-.stage-area.over .glyph {
+.stage-area.over .choose-btn {
   transform: translateY(-2px) scale(1.06);
 }
 
@@ -325,16 +323,50 @@ function formatBytes(bytes: number) {
   opacity: 0.6;
 }
 
+/* A real button, not styled text, so it reads as tappable without relying
+   on hover — the only signal a touch screen never gets. */
 .drop-invite {
-  display: flex;
-  align-items: center;
+  display: grid;
+  justify-items: center;
   gap: var(--space-3);
-  min-height: 72px;
-  padding: var(--space-3);
+  min-height: 116px;
+  padding: var(--space-5) var(--space-3);
   cursor: pointer;
 }
 
+.choose-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  padding: 0 var(--space-5);
+  background: var(--lime-flow);
+  color: var(--deep-space);
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 600;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.choose-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.drop-invite:active .choose-btn {
+  transform: scale(0.97);
+}
+
+.drop-invite small {
+  color: var(--muted-gray);
+  font-size: 12px;
+}
+
 @media (hover: hover) and (pointer: fine) {
+  .drop-invite:hover .choose-btn {
+    transform: translateY(-1px);
+  }
+
   .stage-area:not(.filled):hover {
     border-color: var(--lime-edge);
     background: var(--lime-wash);
@@ -344,6 +376,11 @@ function formatBytes(bytes: number) {
 .stage-area.locked .drop-invite,
 .stage-area.locked .more {
   cursor: not-allowed;
+}
+
+.stage-area.locked .choose-btn {
+  background: var(--slate-charcoal);
+  color: var(--muted-gray);
 }
 
 .drop-invite input,
