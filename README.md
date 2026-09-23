@@ -44,11 +44,11 @@ PyDrop cria uma **sala temporária** com um código de 8 caracteres. Duas pessoa
 ## Como funciona (visão geral)
 
 ```
-┌──────────────┐        1. cria sala (POST /rooms)        ┌──────────────┐
-│  Dispositivo │ ────────────────────────────────────────▶│              │
-│      A       │        2. troca de sinalização WebRTC     │   Backend    │
-│  (navegador) │◀──────────────(WebSocket)────────────────▶│  (FastAPI)   │
-└──────┬───────┘                                            └──────────────┘
+┌──────────────┐        1. cria sala (POST /rooms)           ┌──────────────┐
+│  Dispositivo │ ────────────────────────────────────────▶  │   Backend    │ 
+│      A       │        2. troca de sinalização WebRTC       │              │
+│  (navegador) │◀──────────────(WebSocket)────────────────▶ │  (FastAPI)   │
+└──────┬───────┘                                             └──────────────┘
        │                                                            ▲
        │         3. conexão P2P direta estabelecida (WebRTC)        │
        │         ── os bytes do arquivo NUNCA passam por aqui ──    │
