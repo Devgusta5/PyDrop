@@ -8,6 +8,7 @@ import ConnectionField from './components/ConnectionField.vue'
 import TransferDock from './components/TransferDock.vue'
 import RoomQr from './components/RoomQr.vue'
 import ClipboardNote from './components/ClipboardNote.vue'
+import HelpGuide from './components/HelpGuide.vue'
 
 type View = 'start' | 'room' | 'connected'
 type AppState =
@@ -46,6 +47,7 @@ const shared = ref<SharedItem[]>([])
 const noteText = ref('')
 const remoteNoteText = ref('')
 let noteSendTimer = 0
+const showHelp = ref(false)
 const peerLeftAt = ref(0)
 const peerLeftSeconds = ref(0)
 // The window between losing the peer and admitting it: the app is retrying.
@@ -752,6 +754,7 @@ onBeforeUnmount(() => {
       </button>
 
       <div class="controls">
+        <button class="chip help" type="button" :aria-label="copy.help" @click="showHelp = true">?</button>
         <button class="chip lang" type="button" :aria-label="copy.language" @click="setLanguage">
           <span class="flag" aria-hidden="true">
             <svg v-if="language === 'pt'" viewBox="0 0 24 16">
@@ -1059,6 +1062,8 @@ onBeforeUnmount(() => {
       <p>{{ installHintBody }}</p>
       <button class="btn ghost" type="button" @click="showInstallHint = false">{{ copy.close }}</button>
     </div>
+
+    <HelpGuide v-if="showHelp" :copy="copy" @close="showHelp = false" />
 
     <!-- ------------------------------------------------------- overlays -->
     <!-- The scrim is what makes this modal: it dims the page, swallows taps
@@ -1759,6 +1764,13 @@ h2 {
 }
 
 .install:hover { color: var(--lime-flow); border-color: var(--lime-edge); }
+
+.chip.help {
+  justify-content: center;
+  width: 38px;
+  padding: 0;
+  font-weight: 700;
+}
 
 /* #5 language flag */
 .chip.lang { gap: var(--space-2); }
