@@ -41,6 +41,8 @@ const shared = ref<SharedItem[]>([])
 // #10 the other device left: a real card with a countdown to room expiry.
 const peerLeftAt = ref(0)
 const peerLeftSeconds = ref(0)
+// The window between losing the peer and admitting it: the app is retrying.
+const isReconnecting = ref(false)
 const activeTransferName = ref('')
 const isTransferring = ref(false)
 const transferComplete = ref(false)
@@ -78,8 +80,11 @@ let pendingDownloadUrl = 0
 // trigger a reconnect loop for a connection we already tore down.
 let connectionGeneration = 0
 let peerLeftTimer = 0
+let peerGraceTimer = 0
 /** Matches ROOM_LIFETIME_SECONDS in the backend. */
 const ROOM_LIFETIME_SECONDS = 60 * 60
+// Long enough to cover a file picker and the socket's own retries.
+const PEER_GRACE_MS = 20_000
 
 const copy = computed<Copy>(() => dictionaries[language.value])
 
@@ -310,7 +315,7 @@ function connectToRoom() {
       // Losing the signaling socket does not mean the peer left: the data
       // channel is direct and may still be carrying a transfer.
       if (roomFull.value) return
-      if (reconnectAttempts >= 3) {
+      if (reconnectAttempts >= 6) {
         serverStatus.value = 'failed'
         setAppState('error')
         showError(copy.value.connectionLostTitle, copy.value.connectionLostBody, 'retry')
@@ -318,7 +323,10 @@ function connectToRoom() {
       }
       reconnectAttempts += 1
       serverStatus.value = 'connecting_ws'
-      reconnectTimer = window.setTimeout(() => connectToRoom(), reconnectAttempts * 1500)
+      // Retry quickly at first: most of these are a tab coming back from a
+      // file picker, where a fast first attempt is the whole difference.
+      const delay = Math.min(400 * 2 ** (reconnectAttempts - 1), 5_000)
+      reconnectTimer = window.setTimeout(() => connectToRoom(), delay)
     },
     onClose: (code) => {
       if (myGeneration !== connectionGeneration) return
@@ -348,6 +356,8 @@ function startPeerLeftCountdown() {
 
 function clearPeerLeft() {
   window.clearInterval(peerLeftTimer)
+  window.clearTimeout(peerGraceTimer)
+  isReconnecting.value = false
   peerLeftAt.value = 0
   peerLeftSeconds.value = 0
 }
@@ -361,11 +371,22 @@ function handlePeerLost() {
   directTransfer?.close()
   directTransfer = null
   deviceConnectionStatus.value = 'disconnected'
-  startPeerLeftCountdown()
+  // Stepping out to a file picker looks exactly like leaving, and it usually
+  // resolves on its own. Say "reconnecting" first and only call it a departure
+  // once the other device has had time to come back.
+  isReconnecting.value = true
+  window.clearTimeout(peerGraceTimer)
+  peerGraceTimer = window.setTimeout(() => {
+    isReconnecting.value = false
+    startPeerLeftCountdown()
+  }, PEER_GRACE_MS)
 }
 
 function handleDevicesConnected(initiator: boolean) {
   clearPeerLeft()
+  // Whatever we were warning about is over — clear it rather than leaving a
+  // stale error on screen next to a working connection.
+  dismissNotice()
   setupDirectTransfer(initiator)
   view.value = 'connected'
   deviceConnectionStatus.value = 'connecting'
@@ -687,6 +708,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('offline', handleOffline)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   window.clearTimeout(reconnectTimer)
+  window.clearTimeout(peerGraceTimer)
+  window.clearInterval(peerLeftTimer)
   window.clearTimeout(pendingDownloadUrl)
   window.clearTimeout(noticeTimer)
 })
@@ -899,6 +922,15 @@ onBeforeUnmount(() => {
           </p>
         </div>
         <button class="btn danger small" type="button" @click="reset()">{{ copy.exitRoom }}</button>
+      </div>
+
+      <!-- Still trying: this is a wait, not a failure, so it never alarms. -->
+      <div v-else-if="isReconnecting" class="banner reconnecting" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <div>
+          <strong>{{ copy.reconnectingTitle }}</strong>
+          <span>{{ copy.reconnectingBody }}</span>
+        </div>
       </div>
 
       <div
@@ -1674,6 +1706,38 @@ h2 {
 
 .banner span {
   color: var(--muted-gray);
+}
+
+/* Reconnecting is a wait, not a fault: quiet surface, no alarm red. */
+.banner.reconnecting {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--quiet-border);
+}
+
+.banner.reconnecting div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.spinner {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--quiet-border);
+  border-top-color: var(--lime-flow);
+  border-radius: 50%;
+  animation: spin 720ms linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2.4s; }
 }
 
 .leave {
