@@ -71,6 +71,16 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* While the QR scanner is open the page behind it must not scroll or take
+   taps. overflow alone is ignored by iOS Safari, so the position is fixed too. */
+body.scan-lock {
+  overflow: hidden;
+  position: fixed;
+  left: 0;
+  right: 0;
+  width: 100%;
+}
+
 /* Browser surfaces theme from the palette rather than shipping defaults. */
 ::selection {
   background: var(--lime-flow);

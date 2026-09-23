@@ -534,6 +534,22 @@ function stopQrScanner() {
   isScanningQr.value = false
 }
 
+// Driven by the state rather than by each call site, so the lock can never be
+// left on by a path that closes the scanner some other way.
+let scrollBeforeScan = 0
+watch(isScanningQr, (scanning) => {
+  if (scanning) {
+    scrollBeforeScan = window.scrollY
+    document.body.style.top = `-${scrollBeforeScan}px`
+    document.body.classList.add('scan-lock')
+    return
+  }
+  document.body.classList.remove('scan-lock')
+  document.body.style.top = ''
+  // Fixing the body collapses the scroll position, so put it back by hand.
+  window.scrollTo(0, scrollBeforeScan)
+})
+
 // --------------------------------------------------------------------- files
 
 /** Adds files to the queue, rejecting any that fail validation. */
@@ -736,6 +752,8 @@ async function loadTransferStats() {
 
 onBeforeUnmount(() => {
   stopQrScanner()
+  document.body.classList.remove('scan-lock')
+  document.body.style.top = ''
   roomConnection?.disconnect()
   directTransfer?.close()
   window.removeEventListener('beforeinstallprompt', handleInstallPrompt)
@@ -947,17 +965,32 @@ onBeforeUnmount(() => {
         />
       </div>
 
-      <!-- #10 The peer really left: say so, and show how long the room lasts. -->
+      <!-- #10 The peer really left: say so, and show how long the room lasts.
+           The code and QR live here because this is the moment they are useful:
+           the other device needs a way back into this same room. -->
       <div v-if="peerLeftAt" class="left-card" role="alert">
-        <span class="left-dot" aria-hidden="true"></span>
-        <div>
-          <strong>{{ copy.peerLeftTitle }}</strong>
-          <span>{{ copy.peerLeftBody }}</span>
-          <p class="countdown tabular">
-            {{ copy.roomExpiresIn }} <strong>{{ expiryClock }}</strong>
-          </p>
+        <div class="left-main">
+          <span class="left-dot" aria-hidden="true"></span>
+          <div>
+            <strong>{{ copy.peerLeftTitle }}</strong>
+            <span>{{ copy.rejoinBody }}</span>
+            <p class="countdown tabular">
+              {{ copy.roomExpiresIn }} <strong>{{ expiryClock }}</strong>
+            </p>
+          </div>
+          <button class="btn danger small" type="button" @click="reset()">{{ copy.exitRoom }}</button>
         </div>
-        <button class="btn danger small" type="button" @click="reset()">{{ copy.exitRoom }}</button>
+
+        <div class="rejoin">
+          <RoomQr v-if="joinUrl" :value="joinUrl" :label="copy.scanToRejoin" :size="180" />
+          <div class="rejoin-code">
+            <span class="code-label">{{ copy.codeLabel }}</span>
+            <strong class="code tabular">{{ displayRoomCode }}</strong>
+            <button class="btn ghost copy small" :class="{ done: copyFeedback }" type="button" @click="copyRoomCode">
+              {{ copyFeedback || copy.copyCode }}
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Still trying: this is a wait, not a failure, so it never alarms. -->
@@ -1057,7 +1090,16 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- ------------------------------------------------------- overlays -->
-    <div v-if="isScanningQr" class="scanner" role="dialog" :aria-label="copy.scanQr">
+    <!-- The scrim is what makes this modal: it dims the page, swallows taps
+         meant for the scanner, and (with .scan-lock on body) stops scrolling. -->
+    <div v-if="isScanningQr" class="scrim" @click="stopQrScanner"></div>
+    <div
+      v-if="isScanningQr"
+      class="scanner"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="copy.scanQr"
+    >
       <video ref="qrVideo" playsinline></video>
       <p>{{ copy.scanQrDialog }}</p>
       <button class="btn ghost" type="button" @click="stopQrScanner">{{ copy.cancelScan }}</button>
@@ -1636,26 +1678,64 @@ h2 {
 }
 
 /* #10 peer-left card */
+/* Not an error: the other device left and the room is still here, waiting.
+   Coral is the right voice — it is the remote device's own colour. */
 .left-card {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--coral-wash);
+  border: 1px solid var(--coral-edge);
+  border-radius: var(--radius);
+}
+
+.left-main {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
   gap: var(--space-3);
-  padding: var(--space-4);
-  background: var(--error-wash);
-  border: 1px solid color-mix(in srgb, var(--error-red) 55%, transparent);
-  border-radius: var(--radius);
 }
 
 .left-card strong { display: block; font-size: 14px; }
-.left-card > div > span { color: var(--muted-gray); font-size: 13px; }
+.left-main > div > span { color: var(--muted-gray); font-size: 13px; }
 
 .left-dot {
   width: 9px;
   height: 9px;
   margin-top: 6px;
   border-radius: 50%;
-  background: var(--error-red);
+  background: var(--coral-signal);
+}
+
+/* The way back in: QR for a phone, code for anything else. */
+.rejoin {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--coral-edge);
+}
+
+.rejoin-code {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+}
+
+.rejoin-code .code {
+  font-size: 22px;
+  letter-spacing: 0.08em;
+}
+
+@media (max-width: 620px) {
+  .rejoin {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .rejoin-code {
+    justify-items: center;
+  }
 }
 
 .countdown {
@@ -1664,7 +1744,7 @@ h2 {
   font-size: 12px;
 }
 
-.countdown strong { display: inline; color: var(--error-red); }
+.countdown strong { display: inline; color: var(--coral-signal); }
 
 /* #9 destructive actions read as destructive. */
 .btn.danger {
@@ -1832,6 +1912,14 @@ h2 {
 }
 
 /* --------------------------------------------------------------- overlays */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 39;
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
+}
+
 .scanner {
   position: fixed;
   left: 50%;

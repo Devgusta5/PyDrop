@@ -43,6 +43,8 @@ const en = {
   receivedLabel: 'Received',
   peerLeftTitle: 'The other device left the room',
   peerLeftBody: 'The room stays open in case it comes back.',
+  rejoinBody: 'Scan or enter this code on the other device to come back to this room.',
+  scanToRejoin: 'Scan to rejoin',
   roomExpiresIn: 'Room expires in',
 
   // Room states
@@ -166,6 +168,8 @@ const pt: typeof en = {
   receivedLabel: 'Recebido',
   peerLeftTitle: 'O outro dispositivo saiu da sala',
   peerLeftBody: 'A sala continua aberta caso ele volte.',
+  rejoinBody: 'Escaneie ou digite este código no outro dispositivo para voltar a esta sala.',
+  scanToRejoin: 'Escaneie para voltar',
   roomExpiresIn: 'A sala expira em',
 
   creatingRoom: 'Criando sua sala…',
