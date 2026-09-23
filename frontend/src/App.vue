@@ -33,7 +33,14 @@ const direction = ref<api.TransferMode>('send')
 const remoteDirection = ref<api.TransferMode>('send')
 const selectedFile = ref<File | null>(null)
 const queue = ref<File[]>([])
-interface SharedItem { name: string; size: number; direction: 'sent' | 'received'; at: number }
+interface SharedItem {
+  name: string
+  size: number
+  direction: 'sent' | 'received'
+  at: number
+  /** Only set for received files, and only while their blob is still in memory. */
+  url?: string
+}
 const shared = ref<SharedItem[]>([])
 const peerLeftAt = ref(0)
 const peerLeftSeconds = ref(0)
@@ -71,7 +78,6 @@ let directTransfer: api.DirectTransfer | null = null
 let reconnectTimer = 0
 let reconnectAttempts = 0
 let noticeTimer = 0
-let pendingDownloadUrl = 0
 // Bumped on every deliberate (re)connect so a stale socket's disconnect cannot
 // trigger a reconnect loop for a connection we already tore down.
 let connectionGeneration = 0
@@ -379,18 +385,18 @@ function setupDirectTransfer(initiator: boolean) {
       deviceConnectionStatus.value = 'connected'
     },
     (file, blob) => {
+      // Kept alive for the rest of the session (not revoked like a one-shot
+      // download link) so the ledger below can reopen the same file later.
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
       link.download = file.name
       link.click()
-      window.clearTimeout(pendingDownloadUrl)
-      pendingDownloadUrl = window.setTimeout(() => URL.revokeObjectURL(url), 4000)
       isReceiving.value = false
       receivePercent.value = 100
       incomingName.value = file.name
       shared.value = [
-        { name: file.name, size: file.size, direction: 'received', at: Date.now() },
+        { name: file.name, size: file.size, direction: 'received', at: Date.now(), url },
         ...shared.value,
       ]
       if (!isTransferring.value) {
@@ -573,13 +579,16 @@ async function startTransfer() {
   }
 }
 
+function revokeSharedUrls() {
+  for (const item of shared.value) if (item.url) URL.revokeObjectURL(item.url)
+}
+
 function reset(force = false) {
   if (!force && isTransferring.value && !window.confirm(copy.value.confirmLeave)) return
   stopQrScanner()
   dismissNotice()
   connectionGeneration += 1
   window.clearTimeout(reconnectTimer)
-  window.clearTimeout(pendingDownloadUrl)
   clearPeerLeft()
   roomConnection?.disconnect()
   directTransfer?.close()
@@ -591,6 +600,7 @@ function reset(force = false) {
   remoteDirection.value = 'send'
   selectedFile.value = null
   queue.value = []
+  revokeSharedUrls()
   shared.value = []
   activeTransferName.value = ''
   incomingName.value = ''
@@ -700,8 +710,8 @@ onBeforeUnmount(() => {
   window.clearTimeout(peerGraceTimer)
   window.clearInterval(peerLeftTimer)
   window.clearInterval(reconnectStageTimer)
-  window.clearTimeout(pendingDownloadUrl)
   window.clearTimeout(noticeTimer)
+  revokeSharedUrls()
 })
 </script>
 
@@ -970,7 +980,10 @@ onBeforeUnmount(() => {
                 />
               </svg>
             </span>
-            <span class="l-name">{{ item.name }}</span>
+            <a v-if="item.url" class="l-name l-name-open" :href="item.url" target="_blank" rel="noopener noreferrer">
+              {{ item.name }}
+            </a>
+            <span v-else class="l-name">{{ item.name }}</span>
             <span class="l-meta tabular">
               {{ item.direction === 'sent' ? copy.sent : copy.receivedLabel }} ·
               {{ (item.size / 1024 / 1024).toFixed(1) }} MB
@@ -1588,10 +1601,25 @@ h2 {
 .dir svg { width: 14px; height: 14px; }
 
 .l-name {
+  display: block;
   font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Only a received file still has its blob in memory to reopen; sent items
+   stay plain text rather than promising an action that would do nothing. */
+.l-name-open {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--quiet-border);
+  text-underline-offset: 2px;
+}
+
+.l-name-open:hover {
+  color: var(--coral-signal);
+  text-decoration-color: currentColor;
 }
 
 .l-meta {
