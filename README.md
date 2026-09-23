@@ -276,6 +276,4 @@ O projeto está publicado em:
 
 ---
 
-<div align="center">
-  <sub>Feito por <a href="https://github.com/Devgusta5">Devgusta5</a></sub>
-</div>
+
