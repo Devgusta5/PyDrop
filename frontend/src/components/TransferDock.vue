@@ -107,7 +107,7 @@ function formatBytes(bytes: number) {
             <button
               v-if="!isTransferring"
               type="button"
-              :aria-label="copy.removeFromQueue"
+              :aria-label="copy.removeFromQueue(file.name)"
               @click="$emit('removeQueued', i)"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
@@ -151,7 +151,7 @@ function formatBytes(bytes: number) {
     </div>
 
     <!-- Progress. Send and receive report separately: both can run at once. -->
-    <div v-if="direction === 'send' && (isTransferring || transferComplete)" class="meter" aria-live="polite">
+    <div v-if="direction === 'send' && (isTransferring || transferComplete)" class="meter">
       <div class="meter-head">
         <span>{{ transferComplete ? copy.complete : `${copy.sending} ${activeTransferName}` }}</span>
         <strong class="tabular">{{ transferPercent }}%</strong>
@@ -159,6 +159,7 @@ function formatBytes(bytes: number) {
       <div
         class="track"
         role="progressbar"
+        :aria-label="`${copy.sending} ${activeTransferName}`"
         :aria-valuenow="transferPercent"
         aria-valuemin="0"
         aria-valuemax="100"
@@ -167,7 +168,7 @@ function formatBytes(bytes: number) {
       </div>
     </div>
 
-    <div v-if="isReceiving || (incomingName && !transferComplete)" class="meter" aria-live="polite">
+    <div v-if="isReceiving || (incomingName && !transferComplete)" class="meter">
       <div class="meter-head">
         <span>{{ isReceiving ? `${copy.receiving} ${incomingName}` : `${copy.received} ${incomingName}` }}</span>
         <strong class="tabular">{{ receivePercent }}%</strong>
@@ -175,6 +176,7 @@ function formatBytes(bytes: number) {
       <div
         class="track"
         role="progressbar"
+        :aria-label="`${copy.receiving} ${incomingName}`"
         :aria-valuenow="receivePercent"
         aria-valuemin="0"
         aria-valuemax="100"
@@ -475,6 +477,7 @@ function formatBytes(bytes: number) {
 }
 
 .queue button {
+  position: relative;
   display: grid;
   place-items: center;
   width: 26px;
@@ -483,6 +486,14 @@ function formatBytes(bytes: number) {
   border: 0;
   color: var(--muted-gray);
   border-radius: 3px;
+}
+
+/* Visual size stays compact in the dense row; the tap target still meets the
+   44px minimum by extending into the row's padding rather than the layout. */
+.queue button::before {
+  content: '';
+  position: absolute;
+  inset: -9px;
 }
 
 .queue button:hover {

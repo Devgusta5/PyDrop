@@ -53,7 +53,7 @@ let startedAt = 0
 /** 0 → 1 as the link forms. Drives every "is it connected yet" visual. */
 let formed = 0
 /** Smoothed pointer offset in canvas units; the parallax and bend read from it. */
-const pointer = { x: 0, y: 0, tx: 0, ty: 0, inside: false }
+const pointer = { x: 0, y: 0, tx: 0, ty: 0 }
 
 interface Signal {
   /** Position along the link, 0 at this device, 1 at the other. */
@@ -230,13 +230,11 @@ function onPointerMove(event: PointerEvent) {
   // Normalised to -1..1, then scaled into canvas units.
   pointer.tx = (((event.clientX - rect.left) / rect.width) * 2 - 1) * 14
   pointer.ty = (((event.clientY - rect.top) / rect.height) * 2 - 1) * 10
-  pointer.inside = true
 }
 
 function onPointerLeave() {
   pointer.tx = 0
   pointer.ty = 0
-  pointer.inside = false
 }
 
 // ------------------------------------------------------------- lifecycle

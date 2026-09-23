@@ -1930,6 +1930,7 @@ h2 {
 }
 
 .dismiss {
+  position: relative;
   flex: none;
   width: 30px;
   height: 30px;
@@ -1938,6 +1939,14 @@ h2 {
   background: none;
   border: 0;
   color: var(--muted-gray);
+}
+
+/* Visual size stays compact next to the message text; the tap target still
+   meets the 44px minimum by extending into the toast's own padding. */
+.dismiss::before {
+  content: '';
+  position: absolute;
+  inset: -7px;
 }
 
 .dismiss:hover {

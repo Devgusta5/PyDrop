@@ -12,8 +12,10 @@
   --quiet-border: #273238;
   --transfer-green: #8ee36b;
   /* Deliberately far from --coral-signal: at #FF5964 the two were one hue
-     apart, so every coral "remote device" surface read as a fault. */
-  --error-red: #e02f4a;
+     apart, so every coral "remote device" surface read as a fault. Lightened
+     from #e02f4a (4.28:1 on deep-space, failing AA text contrast) to clear
+     4.5:1 without shifting hue. */
+  --error-red: #e6576d;
 
   /* Derived surfaces. Kept as tokens so tints stay consistent across components. */
   --lime-wash: rgba(183, 243, 74, 0.08);
