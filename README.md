@@ -3,7 +3,7 @@
 
   # PyDrop
 
-  **Transferência direta de arquivos entre dispositivos.**
+  **Transferência direta de arquivos e textos entre dispositivos.**
   Sem conta. Sem armazenamento permanente. Arquivos de até 500 MB.
 
   [![Frontend: Vue 3](https://img.shields.io/badge/frontend-Vue%203-42b883)](frontend)
@@ -33,6 +33,7 @@
 PyDrop cria uma **sala temporária** com um código de 8 caracteres. Duas pessoas entram na mesma sala — uma pelo código, outra escaneando o QR — e os arquivos vão **direto de um navegador para o outro**, via WebRTC. O servidor nunca vê os bytes do arquivo: ele só ajuda os dois dispositivos a se encontrarem.
 
 - 🔗 **Peer-to-peer real** — os dados trafegam direto entre os dispositivos (WebRTC DataChannel), não passam pelo backend.
+- 📝 **Bloco de notas compartilhado** — um campo de texto sincronizado ao vivo entre os dois dispositivos, para passar links, códigos e trechos de texto sem precisar criar um arquivo.
 - ⏳ **Sem persistência** — nada fica salvo em disco ou banco de dados; a sala expira em 1 hora.
 - 📱 **PWA instalável** — funciona como app nativo em Android, iOS e desktop.
 - 🌐 **Sem conta** — nenhum cadastro, nenhum login.
@@ -67,13 +68,24 @@ PyDrop cria uma **sala temporária** com um código de 8 caracteres. Duas pessoa
 
 ---
 
+## Bloco de notas compartilhado
+
+Além de arquivos, o PyDrop tem um **bloco de notas ao vivo**: um campo de texto que aparece assim que os dois dispositivos se conectam. O que você digita de um lado aparece do outro em tempo real — útil para passar um link, um código, um endereço ou qualquer trecho de texto que não vale a pena virar arquivo.
+
+- **Ao vivo** — o texto é sincronizado enquanto você digita (com um *debounce* de 150 ms, para não mandar uma mensagem por tecla pressionada).
+- **Dois campos** — "Seu texto" (editável) e "Texto do outro" (somente leitura), com um botão de copiar. Assim os dois lados podem escrever ao mesmo tempo sem sobrescrever um ao outro.
+- **Mesmo canal, zero servidor** — o texto viaja pelo **mesmo `RTCDataChannel`** que já transporta os arquivos, como uma mensagem `{ kind: 'note', text }`. O backend não vê nada disso, exatamente como acontece com os arquivos.
+- **Limite de 20.000 caracteres** por sincronização, e o conteúdo é descartado quando você sai da sala.
+
+---
+
 ## Stack
 
 | Camada | Tecnologia |
 |---|---|
 | Frontend | Vue 3 (`<script setup>`, Composition API) + TypeScript + Vite |
 | Sinalização / API | FastAPI (Python) + WebSocket |
-| Transferência de arquivo | WebRTC DataChannel (P2P, direto entre navegadores) |
+| Transferência de arquivo e texto | WebRTC DataChannel (P2P, direto entre navegadores) |
 | Estado das salas | Em memória (dicionário Python, expira sozinho) |
 | Métricas (opcional) | Upstash Redis — com fallback automático para contador local se não configurado |
 | PWA | Service Worker + Web App Manifest |
@@ -258,6 +270,7 @@ PyDrop/
     │   └── components/
     │       ├── ConnectionField.vue       # animação da conexão entre os dois dispositivos
     │       ├── TransferDock.vue          # área de envio/recebimento de arquivos
+    │       ├── ClipboardNote.vue         # bloco de notas sincronizado ao vivo
     │       └── RoomQr.vue                # QR code da sala, desenhado com a marca no centro
     ├── public/                           # ícones, manifest, service worker
     └── package.json

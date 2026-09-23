@@ -7,6 +7,7 @@ import PortalMark from './components/PortalMark.vue'
 import ConnectionField from './components/ConnectionField.vue'
 import TransferDock from './components/TransferDock.vue'
 import RoomQr from './components/RoomQr.vue'
+import ClipboardNote from './components/ClipboardNote.vue'
 
 type View = 'start' | 'room' | 'connected'
 type AppState =
@@ -42,6 +43,9 @@ interface SharedItem {
   url?: string
 }
 const shared = ref<SharedItem[]>([])
+const noteText = ref('')
+const remoteNoteText = ref('')
+let noteSendTimer = 0
 const peerLeftAt = ref(0)
 const peerLeftSeconds = ref(0)
 // The window between losing the peer and admitting it: the app is retrying.
@@ -424,11 +428,30 @@ function setupDirectTransfer(initiator: boolean) {
       deviceConnectionStatus.value = 'connected'
       clearPeerLeft()
     },
+    (text) => { remoteNoteText.value = text },
   )
   directTransfer.setMode(direction.value)
   directTransfer.start(initiator).catch(() =>
     showError(copy.value.unableToConnectTitle, copy.value.unableToConnectBody, 'retry'),
   )
+}
+
+// ------------------------------------------------------------- shared note
+
+// Debounced so every keystroke doesn't open its own DataChannel message.
+function updateNote(text: string) {
+  noteText.value = text
+  window.clearTimeout(noteSendTimer)
+  noteSendTimer = window.setTimeout(() => directTransfer?.sendNote(text), 150)
+}
+
+async function copyRemoteNote() {
+  if (!remoteNoteText.value) return
+  try {
+    await navigator.clipboard.writeText(remoteNoteText.value)
+  } catch {
+    // Clipboard permission denied — the text is still visible to copy by hand.
+  }
 }
 
 // ------------------------------------------------------------------ room code
@@ -602,6 +625,9 @@ function reset(force = false) {
   queue.value = []
   revokeSharedUrls()
   shared.value = []
+  window.clearTimeout(noteSendTimer)
+  noteText.value = ''
+  remoteNoteText.value = ''
   activeTransferName.value = ''
   incomingName.value = ''
   transferComplete.value = false
@@ -711,6 +737,7 @@ onBeforeUnmount(() => {
   window.clearInterval(peerLeftTimer)
   window.clearInterval(reconnectStageTimer)
   window.clearTimeout(noticeTimer)
+  window.clearTimeout(noteSendTimer)
   revokeSharedUrls()
 })
 </script>
@@ -960,6 +987,15 @@ onBeforeUnmount(() => {
         @send="startTransfer"
         @clear="clearFile"
         @remove-queued="removeQueued"
+      />
+
+      <ClipboardNote
+        :copy="copy"
+        :local-text="noteText"
+        :remote-text="remoteNoteText"
+        :connection="deviceConnectionStatus"
+        @update="updateNote"
+        @copy-remote="copyRemoteNote"
       />
 
       <button class="btn danger leave" type="button" @click="reset()">{{ copy.exitRoom }}</button>

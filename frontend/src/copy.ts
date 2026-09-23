@@ -81,6 +81,15 @@ const en = {
   bothReceiving: 'Both devices are set to receive. Switch one to Send.',
   receiveModeActive: 'Receive mode',
 
+  // Live clipboard
+  noteTitle: 'Shared notepad',
+  noteHint: 'Synced live between both devices',
+  noteYourText: 'Your text',
+  noteTheirText: 'Their text',
+  notePlaceholder: 'Type or paste text, a link…',
+  noteWaiting: 'Nothing shared yet.',
+  copy: 'Copy',
+
   // Device identity
   you: 'YOU',
   otherDevice: 'OTHER DEVICE',
@@ -203,6 +212,14 @@ const pt: typeof en = {
   otherIsSending: 'O outro dispositivo está pronto para enviar.',
   bothReceiving: 'Os dois dispositivos estão em receber. Mude um para Enviar.',
   receiveModeActive: 'Modo receber',
+
+  noteTitle: 'Bloco de notas compartilhado',
+  noteHint: 'Sincronizado ao vivo entre os dois dispositivos',
+  noteYourText: 'Seu texto',
+  noteTheirText: 'Texto do outro',
+  notePlaceholder: 'Digite ou cole um texto, um link…',
+  noteWaiting: 'Nada compartilhado ainda.',
+  copy: 'Copiar',
 
   you: 'VOCÊ',
   otherDevice: 'OUTRO DISPOSITIVO',

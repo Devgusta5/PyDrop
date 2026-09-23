@@ -20,6 +20,7 @@ export interface TransferFile {
 }
 
 export const MAX_FILE_SIZE_BYTES = 500 * 1024 * 1024
+export const MAX_NOTE_LENGTH = 20_000
 
 export function validateTransferFile(file: Pick<TransferFile, 'name' | 'size' | 'type'>): string | null {
   if (!file.name.trim() || file.name.length > 255) return 'The file name must contain between 1 and 255 characters.'
@@ -225,6 +226,8 @@ export class DirectTransfer {
     private readonly onConnectionLost?: () => void,
     private readonly onRemoteMode?: (mode: TransferMode) => void,
     private readonly onReconnected?: () => void,
+    // Live clipboard: the other device's note text, as it types.
+    private readonly onRemoteNote?: (text: string) => void,
   ) {
     this.peer = new RTCPeerConnection({
       iceServers,
@@ -279,6 +282,13 @@ export class DirectTransfer {
     if (this.channel?.readyState === 'open') this.channel.send(JSON.stringify({ kind: 'mode', mode }))
   }
 
+  /** Live clipboard: pushes the current note text to the other device as-is. */
+  sendNote(text: string) {
+    if (this.channel?.readyState === 'open') {
+      this.channel.send(JSON.stringify({ kind: 'note', text: text.slice(0, MAX_NOTE_LENGTH) }))
+    }
+  }
+
   async sendFile(file: File) {
     if (!this.channel || this.channel.readyState !== 'open') throw new Error('The devices are not connected yet')
     const validationError = validateTransferFile(file)
@@ -319,7 +329,7 @@ export class DirectTransfer {
 
   private handleData(data: string | ArrayBuffer) {
     if (typeof data === 'string') {
-      let message: { kind: string; transferId?: string; name?: string; size?: number; type?: string; mode?: string }
+      let message: { kind: string; transferId?: string; name?: string; size?: number; type?: string; mode?: string; text?: string }
       try {
         message = JSON.parse(data)
       } catch {
@@ -328,6 +338,8 @@ export class DirectTransfer {
       }
       if (message.kind === 'mode') {
         if (message.mode === 'send' || message.mode === 'receive') this.onRemoteMode?.(message.mode)
+      } else if (message.kind === 'note') {
+        this.onRemoteNote?.(message.text ?? '')
       } else if (message.kind === 'file') {
         const incoming = {
           name: message.name || '',
