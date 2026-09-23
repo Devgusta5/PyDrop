@@ -48,7 +48,7 @@ const en = {
   roomExpiresIn: 'Room expires in',
 
   // Room states
-  creatingRoom: 'Creating your room…',
+  creatingRoom: 'Waiting for the server…',
   joiningRoom: 'Joining room…',
   roomReady: 'Your room is ready',
   waiting: 'Waiting for another device',
@@ -172,7 +172,7 @@ const pt: typeof en = {
   scanToRejoin: 'Escaneie para voltar',
   roomExpiresIn: 'A sala expira em',
 
-  creatingRoom: 'Criando sua sala…',
+  creatingRoom: 'Aguardando o servidor…',
   joiningRoom: 'Entrando na sala…',
   roomReady: 'Sua sala está pronta',
   waiting: 'Aguardando outro dispositivo',

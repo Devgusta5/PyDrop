@@ -20,7 +20,6 @@ type AppState =
   | 'completed'
   | 'error'
 type EntryMode = 'create' | 'join' | null
-/** Errors get a title + body + recovery action rather than a raw string. */
 interface AppError {
   title: string
   body: string
@@ -33,12 +32,9 @@ const language = ref<Language>('pt')
 const direction = ref<api.TransferMode>('send')
 const remoteDirection = ref<api.TransferMode>('send')
 const selectedFile = ref<File | null>(null)
-// #2 multi-file: a queue rather than a single slot.
 const queue = ref<File[]>([])
-// #3 dashboard: everything that crossed this room, both directions.
 interface SharedItem { name: string; size: number; direction: 'sent' | 'received'; at: number }
 const shared = ref<SharedItem[]>([])
-// #10 the other device left: a real card with a countdown to room expiry.
 const peerLeftAt = ref(0)
 const peerLeftSeconds = ref(0)
 // The window between losing the peer and admitting it: the app is retrying.
@@ -59,7 +55,6 @@ const isDragOver = ref(false)
 const copyFeedback = ref('')
 const notice = ref<AppError | null>(null)
 const isOffline = ref(false)
-// #7 Captured from beforeinstallprompt; null when already installed or unsupported.
 const installPrompt = ref<{ prompt: () => Promise<void> } | null>(null)
 const qrVideo = ref<HTMLVideoElement | null>(null)
 const joinInput = ref<HTMLInputElement | null>(null)
@@ -83,9 +78,7 @@ let connectionGeneration = 0
 let peerLeftTimer = 0
 let peerGraceTimer = 0
 let reconnectStageTimer = 0
-/** Matches ROOM_LIFETIME_SECONDS in the backend. */
 const ROOM_LIFETIME_SECONDS = 60 * 60
-// Long enough to cover a file picker and the socket's own retries.
 const PEER_GRACE_MS = 20_000
 const RECONNECT_STAGES = 3
 
@@ -95,8 +88,6 @@ const isMobile = computed(() => /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.
 const isIos = /iPhone|iPad|iPod/i.test(navigator.userAgent)
 const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator as unknown as { standalone?: boolean }).standalone === true
 const showInstallHint = ref(false)
-// iOS has no beforeinstallprompt at all, and Chrome only fires it after its own
-// engagement heuristics, so the button can't wait for the event to exist.
 const canOfferInstall = computed(() => isMobile.value && !isStandalone)
 const installHintBody = computed(() =>
   isIos ? copy.value.installAppIosBody : copy.value.installAppAndroidBody,
@@ -116,7 +107,6 @@ const expiryClock = computed(() => {
   return `${m}:${String(sec).padStart(2, '0')}`
 })
 const displayRoomCode = computed(() => formatRoomCode(roomCode.value))
-// The QR encodes the deep link the other device opens; RoomQr draws it.
 const joinUrl = computed(() => {
   if (!roomCode.value) return ''
   const base = import.meta.env.VITE_PUBLIC_APP_URL || 'https://pydrop.vercel.app'
@@ -141,16 +131,9 @@ const peerModeMessage = computed(() => {
   if (bothReceiving.value) return copy.value.bothReceiving
   return remoteDirection.value === 'receive' ? copy.value.otherIsReceiving : copy.value.otherIsSending
 })
-/**
- * The story the connection field tells: alone → reaching out → found, forming →
- * established. Each phase maps to something the app genuinely knows, so the
- * animation reports real state rather than decorating.
- */
 const connectionPhase = computed<'idle' | 'searching' | 'linking' | 'linked'>(() => {
   if (deviceConnectionStatus.value === 'connected') return 'linked'
-  // The other device is in the room and the data channel is coming up.
   if (view.value === 'connected') return 'linking'
-  // A room exists and we are waiting for someone, or the server is waking.
   if (view.value === 'room' || isPreparingBackend.value) return 'searching'
   return 'idle'
 })
@@ -171,7 +154,6 @@ function setAppState(state: AppState) {
 function showError(title: string, body: string, action?: AppError['action']) {
   notice.value = { title, body, action }
   window.clearTimeout(noticeTimer)
-  // Errors offering a recovery action stay until dismissed; plain ones time out.
   if (!action) noticeTimer = window.setTimeout(() => { notice.value = null }, 7000)
 }
 
@@ -209,7 +191,6 @@ async function createRoom() {
     return
   }
   entryMode.value = 'create'
-  // #1 Whoever opens the room is the one waiting to be sent something.
   direction.value = 'receive'
   view.value = 'room'
   setAppState('creating-room')
@@ -265,8 +246,6 @@ async function expandJoin() {
   joinInput.value?.focus()
 }
 
-// Reconnects to the room we already have rather than minting a new code and
-// stranding the other device.
 async function retryConnection() {
   dismissNotice()
   if (!roomCode.value) {
@@ -301,7 +280,6 @@ function connectToRoom() {
       clearPeerLeft()
       if (sessions > 1) handleDevicesConnected(true)
     },
-    // The backend broadcasts this on every peer close; nothing was listening.
     onUserLeft: () => {
       if (myGeneration !== connectionGeneration) return
       handlePeerLost()
@@ -316,8 +294,6 @@ function connectToRoom() {
     },
     onDisconnect: () => {
       if (myGeneration !== connectionGeneration) return
-      // Losing the signaling socket does not mean the peer left: the data
-      // channel is direct and may still be carrying a transfer.
       if (roomFull.value) return
       if (reconnectAttempts >= 6) {
         serverStatus.value = 'failed'
@@ -327,11 +303,7 @@ function connectToRoom() {
       }
       reconnectAttempts += 1
       serverStatus.value = 'connecting_ws'
-      // This is the side that walked away (file picker, locked screen). It
-      // needs the same reassurance as the side that watched us vanish.
       if (view.value === 'connected') beginReconnecting()
-      // Retry quickly at first: most of these are a tab coming back from a
-      // file picker, where a fast first attempt is the whole difference.
       const delay = Math.min(400 * 2 ** (reconnectAttempts - 1), 5_000)
       reconnectTimer = window.setTimeout(() => connectToRoom(), delay)
     },
@@ -371,33 +343,18 @@ function clearPeerLeft() {
   peerLeftSeconds.value = 0
 }
 
-// A phone backgrounding the tab to show its file picker can kill both the
-// signaling socket and the WebRTC channel. The socket reconnects on its own,
-// but the old peer connection is dead: drop it so the next onUserJoined/
-// onRoomState (sessions > 1) is free to renegotiate a fresh one instead of
-// being blocked by setupDirectTransfer's "already have one" guard.
 function handlePeerLost() {
   directTransfer?.close()
   directTransfer = null
   deviceConnectionStatus.value = 'disconnected'
-  // Stepping out to a file picker looks exactly like leaving, and it usually
-  // resolves on its own. Say "reconnecting" first and only call it a departure
-  // once the other device has had time to come back.
   beginReconnecting()
 }
 
-/**
- * Both sides of a drop land here: the one that walked away and the one that
- * watched it vanish. The message walks forward while the wait lasts so it
- * reads as progress rather than a frozen spinner.
- */
 function beginReconnecting() {
   if (isReconnecting.value) return
   isReconnecting.value = true
   reconnectingStage.value = 0
 
-  // Derived from elapsed time, not from tick count: a backgrounded tab freezes
-  // its timers, and on return the message must match how long it really took.
   const startedAt = Date.now()
   const stageLength = PEER_GRACE_MS / RECONNECT_STAGES
   window.clearInterval(reconnectStageTimer)
@@ -416,8 +373,6 @@ function beginReconnecting() {
 
 function handleDevicesConnected(initiator: boolean) {
   clearPeerLeft()
-  // Whatever we were warning about is over — clear it rather than leaving a
-  // stale error on screen next to a working connection.
   dismissNotice()
   setupDirectTransfer(initiator)
   view.value = 'connected'
@@ -440,8 +395,6 @@ function setupDirectTransfer(initiator: boolean) {
       link.href = url
       link.download = file.name
       link.click()
-      // Give the browser a moment to take the blob before revoking it; revoking
-      // synchronously after click() is flaky on some mobile browsers.
       window.clearTimeout(pendingDownloadUrl)
       pendingDownloadUrl = window.setTimeout(() => URL.revokeObjectURL(url), 4000)
       isReceiving.value = false
@@ -451,7 +404,6 @@ function setupDirectTransfer(initiator: boolean) {
         { name: file.name, size: file.size, direction: 'received', at: Date.now() },
         ...shared.value,
       ]
-      // Don't declare the whole screen complete while our own send is still running.
       if (!isTransferring.value) {
         transferComplete.value = true
         setAppState('completed')
@@ -474,7 +426,6 @@ function setupDirectTransfer(initiator: boolean) {
     },
     (mode) => { remoteDirection.value = mode },
     () => {
-      // ICE recovered on its own — the device never really went away.
       deviceConnectionStatus.value = 'connected'
       clearPeerLeft()
     },
@@ -493,7 +444,6 @@ async function copyRoomCode() {
     await navigator.clipboard.writeText(roomCode.value)
     copyFeedback.value = copy.value.copied
   } catch {
-    // Clipboard blocked (insecure context or denied) — show the code to copy by hand.
     copyFeedback.value = roomCode.value
   }
   window.setTimeout(() => { copyFeedback.value = '' }, 2200)
@@ -534,8 +484,6 @@ function stopQrScanner() {
   isScanningQr.value = false
 }
 
-// Driven by the state rather than by each call site, so the lock can never be
-// left on by a path that closes the scanner some other way.
 let scrollBeforeScan = 0
 watch(isScanningQr, (scanning) => {
   if (scanning) {
@@ -552,7 +500,6 @@ watch(isScanningQr, (scanning) => {
 
 // --------------------------------------------------------------------- files
 
-/** Adds files to the queue, rejecting any that fail validation. */
 function acceptFiles(files: File[]) {
   const rejected: string[] = []
   for (const file of files) {
@@ -779,16 +726,13 @@ onBeforeUnmount(() => {
       </button>
 
       <div class="controls">
-        <!-- #5 Shows the language you switch TO, with that locale's flag. -->
         <button class="chip lang" type="button" :aria-label="copy.language" @click="setLanguage">
           <span class="flag" aria-hidden="true">
-            <!-- In PT, offer EN: stars and stripes. -->
             <svg v-if="language === 'pt'" viewBox="0 0 24 16">
               <rect width="24" height="16" fill="#B31942" />
               <path d="M0 1.85h24v1.84H0zm0 3.69h24v1.85H0zm0 3.69h24v1.85H0zm0 3.7h24v1.84H0z" fill="#fff" />
               <rect width="10.5" height="8.6" fill="#0A3161" />
             </svg>
-            <!-- In EN, offer PT-BR: green field, yellow lozenge, blue globe. -->
             <svg v-else viewBox="0 0 24 16">
               <rect width="24" height="16" fill="#009B3A" />
               <path d="M12 2.3 21.6 8 12 13.7 2.4 8z" fill="#FEDF00" />
@@ -824,8 +768,6 @@ onBeforeUnmount(() => {
           >
             {{ copy.join }}
           </button>
-          <!-- #6 On a phone, scanning is the fastest way in — so it is a
-               first-class action here rather than buried in the join form. -->
           <button v-if="isMobile" class="btn ghost scan" type="button" @click="startQrScanner">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
               <path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16" stroke-linecap="round" />
@@ -860,9 +802,6 @@ onBeforeUnmount(() => {
           </div>
         </form>
 
-        <!-- The free backend sleeps; say so rather than looking broken. A sweep
-             rather than a spinner: it reads as reaching out, and the elapsed
-             seconds prove it is still working. -->
         <div v-if="isPreparingBackend" class="waking" aria-live="polite">
           <span class="sweep" aria-hidden="true"></span>
           <div>
@@ -884,11 +823,6 @@ onBeforeUnmount(() => {
       </div>
     </main>
 
-    <!-- ----------------------------------------------------------- room -->
-    <!-- The creator waits here and shares a code/QR. A joiner already HAS the
-         code — showing them the same "share this" screen was the actual bug:
-         it reads as though joining failed and dumped them on the wrong page.
-         So entryMode splits this into two distinct, honest states. -->
     <main
       v-else-if="view === 'room' && entryMode === 'join'"
       class="stage room joining"
@@ -914,8 +848,6 @@ onBeforeUnmount(() => {
           <strong class="code tabular">{{ displayRoomCode }}</strong>
           <div class="code-actions">
             <button class="btn ghost copy" :class="{ done: copyFeedback }" type="button" @click="copyRoomCode">
-              <!-- The icon swaps to a tick in place: the button itself reports
-                   the result, rather than a message appearing beside it. -->
               <span class="copy-icon" aria-hidden="true">
                 <svg v-if="!copyFeedback" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                   <rect x="9" y="9" width="11" height="11" rx="2" />
