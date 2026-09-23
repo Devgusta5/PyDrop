@@ -224,7 +224,7 @@ const pt: typeof en = {
   confirmLeave: 'Uma transferência está em andamento. Sair mesmo assim?',
   offline: 'Você está sem conexão.',
   offlineBody: 'O PyDrop precisa de conexão para parear dispositivos.',
-  transferCount: (count: number) => `${count} ${count === 1 ? 'transferência' : 'transferências'}`,
+  transferCount: (count: number) => `${count} ${count === 1 ? 'transferência feita por meio do PyDrop' : 'transferências feitas por meio do PyDrop'}`,
 }
 
 export type Copy = typeof en

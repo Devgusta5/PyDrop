@@ -13,7 +13,7 @@
  *   everything else -> untouched
  */
 
-const VERSION = 'pydrop-shell-v1'
+const VERSION = 'pydrop-shell-v2'
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/pydrop-icon-192.png', '/pydrop-icon-512.png']
 
 /** Paths that must always hit the network. Room state is never stale-servable. */
@@ -34,6 +34,18 @@ self.addEventListener('activate', (event) => {
     caches
       .keys()
       .then((keys) => Promise.all(keys.filter((key) => key !== VERSION).map((key) => caches.delete(key))))
+      // Hashed asset filenames change every build, so yesterday's entries are
+      // dead weight that can also resurrect an old shell. Keep only the HTML.
+      .then(() => caches.open(VERSION))
+      .then((cache) =>
+        cache.keys().then((requests) =>
+          Promise.all(
+            requests
+              .filter((request) => /\/assets\//.test(new URL(request.url).pathname))
+              .map((request) => cache.delete(request)),
+          ),
+        ),
+      )
       .then(() => self.clients.claim()),
   )
 })
@@ -56,8 +68,12 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetch(request)
         .then((response) => {
-          const copy = response.clone()
-          caches.open(VERSION).then((cache) => cache.put('/index.html', copy))
+          // Only a genuine 200 is worth keeping: caching an error page would
+          // pin the app to that error for every later offline load.
+          if (response.ok) {
+            const copy = response.clone()
+            caches.open(VERSION).then((cache) => cache.put('/index.html', copy))
+          }
           return response
         })
         .catch(() => caches.match('/index.html').then((cached) => cached ?? Response.error())),
