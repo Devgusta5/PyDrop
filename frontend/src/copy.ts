@@ -113,6 +113,13 @@ const en = {
   connectionLostBody: 'Reopen PyDrop there to continue the transfer.',
   reconnectingTitle: 'Reconnecting…',
   reconnectingBody: 'Keep this screen open. This takes a few seconds.',
+  // Progress the wait honestly: each line says where we are, never that the
+  // link is back before it actually is.
+  reconnectingStages: [
+    'Reconnecting…',
+    'Still trying…',
+    'Almost there…',
+  ],
   deviceDisconnected: 'Device disconnected',
   fileTooLarge: 'That file is larger than 500 MB.',
   fileTooLargeBody: 'Try a smaller file, or compress it first.',
@@ -222,6 +229,11 @@ const pt: typeof en = {
   connectionLostBody: 'Abra o PyDrop nele novamente para continuar a transferência.',
   reconnectingTitle: 'Reconectando…',
   reconnectingBody: 'Mantenha esta tela aberta. Leva alguns segundos.',
+  reconnectingStages: [
+    'Reconectando…',
+    'Ainda tentando…',
+    'Quase lá…',
+  ],
   deviceDisconnected: 'Dispositivo desconectado',
   fileTooLarge: 'Esse arquivo é maior que 500 MB.',
   fileTooLargeBody: 'Tente um arquivo menor, ou comprima antes.',

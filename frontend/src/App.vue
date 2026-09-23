@@ -43,6 +43,7 @@ const peerLeftAt = ref(0)
 const peerLeftSeconds = ref(0)
 // The window between losing the peer and admitting it: the app is retrying.
 const isReconnecting = ref(false)
+const reconnectingStage = ref(0)
 const activeTransferName = ref('')
 const isTransferring = ref(false)
 const transferComplete = ref(false)
@@ -81,10 +82,12 @@ let pendingDownloadUrl = 0
 let connectionGeneration = 0
 let peerLeftTimer = 0
 let peerGraceTimer = 0
+let reconnectStageTimer = 0
 /** Matches ROOM_LIFETIME_SECONDS in the backend. */
 const ROOM_LIFETIME_SECONDS = 60 * 60
 // Long enough to cover a file picker and the socket's own retries.
 const PEER_GRACE_MS = 20_000
+const RECONNECT_STAGES = 3
 
 const copy = computed<Copy>(() => dictionaries[language.value])
 
@@ -98,6 +101,7 @@ const canOfferInstall = computed(() => isMobile.value && !isStandalone)
 const installHintBody = computed(() =>
   isIos ? copy.value.installAppIosBody : copy.value.installAppAndroidBody,
 )
+const reconnectingMessage = computed(() => copy.value.reconnectingStages[reconnectingStage.value])
 const isPreparingBackend = computed(() =>
   ['checking', 'waking_up', 'connecting_ws'].includes(serverStatus.value),
 )
@@ -323,6 +327,9 @@ function connectToRoom() {
       }
       reconnectAttempts += 1
       serverStatus.value = 'connecting_ws'
+      // This is the side that walked away (file picker, locked screen). It
+      // needs the same reassurance as the side that watched us vanish.
+      if (view.value === 'connected') beginReconnecting()
       // Retry quickly at first: most of these are a tab coming back from a
       // file picker, where a fast first attempt is the whole difference.
       const delay = Math.min(400 * 2 ** (reconnectAttempts - 1), 5_000)
@@ -357,7 +364,9 @@ function startPeerLeftCountdown() {
 function clearPeerLeft() {
   window.clearInterval(peerLeftTimer)
   window.clearTimeout(peerGraceTimer)
+  window.clearInterval(reconnectStageTimer)
   isReconnecting.value = false
+  reconnectingStage.value = 0
   peerLeftAt.value = 0
   peerLeftSeconds.value = 0
 }
@@ -374,10 +383,33 @@ function handlePeerLost() {
   // Stepping out to a file picker looks exactly like leaving, and it usually
   // resolves on its own. Say "reconnecting" first and only call it a departure
   // once the other device has had time to come back.
+  beginReconnecting()
+}
+
+/**
+ * Both sides of a drop land here: the one that walked away and the one that
+ * watched it vanish. The message walks forward while the wait lasts so it
+ * reads as progress rather than a frozen spinner.
+ */
+function beginReconnecting() {
+  if (isReconnecting.value) return
   isReconnecting.value = true
+  reconnectingStage.value = 0
+
+  // Derived from elapsed time, not from tick count: a backgrounded tab freezes
+  // its timers, and on return the message must match how long it really took.
+  const startedAt = Date.now()
+  const stageLength = PEER_GRACE_MS / RECONNECT_STAGES
+  window.clearInterval(reconnectStageTimer)
+  reconnectStageTimer = window.setInterval(() => {
+    const elapsed = Date.now() - startedAt
+    reconnectingStage.value = Math.min(Math.floor(elapsed / stageLength), RECONNECT_STAGES - 1)
+  }, 500)
+
   window.clearTimeout(peerGraceTimer)
   peerGraceTimer = window.setTimeout(() => {
     isReconnecting.value = false
+    window.clearInterval(reconnectStageTimer)
     startPeerLeftCountdown()
   }, PEER_GRACE_MS)
 }
@@ -665,7 +697,10 @@ const handleOffline = () => { isOffline.value = true }
 const handleVisibilityChange = () => {
   if (document.visibilityState !== 'visible') return
   if (view.value === 'start' || !roomCode.value || roomFull.value) return
-  if (serverStatus.value === 'connected' || serverStatus.value === 'connecting_ws') return
+  if (serverStatus.value === 'connected') return
+  // A pending retry may be sitting on a timer the browser froze while hidden,
+  // so don't wait for it — coming back is the moment to try again.
+  window.clearTimeout(reconnectTimer)
   reconnectAttempts = 0
   connectToRoom()
 }
@@ -710,6 +745,7 @@ onBeforeUnmount(() => {
   window.clearTimeout(reconnectTimer)
   window.clearTimeout(peerGraceTimer)
   window.clearInterval(peerLeftTimer)
+  window.clearInterval(reconnectStageTimer)
   window.clearTimeout(pendingDownloadUrl)
   window.clearTimeout(noticeTimer)
 })
@@ -928,7 +964,7 @@ onBeforeUnmount(() => {
       <div v-else-if="isReconnecting" class="banner reconnecting" role="status">
         <span class="spinner" aria-hidden="true"></span>
         <div>
-          <strong>{{ copy.reconnectingTitle }}</strong>
+          <strong>{{ reconnectingMessage }}</strong>
           <span>{{ copy.reconnectingBody }}</span>
         </div>
       </div>
