@@ -981,16 +981,6 @@ onBeforeUnmount(() => {
           <button class="btn danger small" type="button" @click="reset()">{{ copy.exitRoom }}</button>
         </div>
 
-        <div class="rejoin">
-          <RoomQr v-if="joinUrl" :value="joinUrl" :label="copy.scanToRejoin" :size="180" />
-          <div class="rejoin-code">
-            <span class="code-label">{{ copy.codeLabel }}</span>
-            <strong class="code tabular">{{ displayRoomCode }}</strong>
-            <button class="btn ghost copy small" :class="{ done: copyFeedback }" type="button" @click="copyRoomCode">
-              {{ copyFeedback || copy.copyCode }}
-            </button>
-          </div>
-        </div>
       </div>
 
       <!-- Still trying: this is a wait, not a failure, so it never alarms. -->
@@ -1066,6 +1056,17 @@ onBeforeUnmount(() => {
             </span>
           </li>
         </ul>
+
+        <div v-if="joinUrl && roomCode" class="room-share">
+          <RoomQr :value="joinUrl" :label="copy.scanToJoin" :size="180" />
+          <div class="room-share-code">
+            <span class="code-label">{{ copy.codeLabel }}</span>
+            <strong class="code tabular">{{ displayRoomCode }}</strong>
+            <button class="btn ghost copy small" :class="{ done: copyFeedback }" type="button" @click="copyRoomCode">
+              {{ copyFeedback || copy.copyCode }}
+            </button>
+          </div>
+        </div>
       </aside>
     </main>
 
@@ -1707,35 +1708,26 @@ h2 {
   background: var(--coral-signal);
 }
 
-/* The way back in: QR for a phone, code for anything else. */
-.rejoin {
+/* The room access details stay available below the shared-file ledger. */
+.room-share {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
+  margin-top: var(--space-4);
   padding-top: var(--space-4);
-  border-top: 1px solid var(--coral-edge);
+  border-top: 1px solid var(--quiet-border);
 }
 
-.rejoin-code {
+.room-share-code {
   display: grid;
   gap: var(--space-2);
-  justify-items: start;
+  justify-items: center;
 }
 
-.rejoin-code .code {
+.room-share-code .code {
   font-size: 22px;
   letter-spacing: 0.08em;
-}
-
-@media (max-width: 620px) {
-  .rejoin {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .rejoin-code {
-    justify-items: center;
-  }
 }
 
 .countdown {
