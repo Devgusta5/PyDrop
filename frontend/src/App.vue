@@ -1643,7 +1643,7 @@ h2 {
   gap: var(--space-3);
   padding: var(--space-4);
   background: var(--error-wash);
-  border: 1px solid rgba(255, 89, 100, 0.55);
+  border: 1px solid color-mix(in srgb, var(--error-red) 55%, transparent);
   border-radius: var(--radius);
 }
 
@@ -1669,7 +1669,7 @@ h2 {
 /* #9 destructive actions read as destructive. */
 .btn.danger {
   background: transparent;
-  border: 1px solid rgba(255, 89, 100, 0.6);
+  border: 1px solid color-mix(in srgb, var(--error-red) 60%, transparent);
   color: var(--error-red);
 }
 
@@ -1735,7 +1735,7 @@ h2 {
   gap: var(--space-1);
   padding: var(--space-3) var(--space-4);
   background: var(--error-wash);
-  border: 1px solid rgba(255, 89, 100, 0.5);
+  border: 1px solid color-mix(in srgb, var(--error-red) 50%, transparent);
   border-radius: var(--radius);
   font-size: 14px;
 }
@@ -1888,7 +1888,7 @@ h2 {
   gap: var(--space-3);
   padding: var(--space-4);
   background: var(--graphite);
-  border: 1px solid rgba(255, 89, 100, 0.55);
+  border: 1px solid color-mix(in srgb, var(--error-red) 55%, transparent);
   border-radius: var(--radius);
   box-shadow: 0 18px 50px -12px rgba(0, 0, 0, 0.66);
   /* Enters from where it lives — the bottom edge — so the motion explains

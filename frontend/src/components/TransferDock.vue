@@ -74,56 +74,68 @@ function formatBytes(bytes: number) {
       </p>
     </header>
 
-    <!-- Send: stage a file. Receive: wait for one. -->
-    <label
+    <!-- Send: one surface that becomes the file list once files are staged,
+         rather than a dropzone with a separate list stacked under it. -->
+    <div
       v-if="direction === 'send'"
-      class="drop"
-      :class="{ staged: selectedFile, over: isDragOver, locked: isTransferring }"
+      class="stage-area"
+      :class="{ filled: queue.length, over: isDragOver, locked: isTransferring }"
       @dragover="$emit('dragOver', $event)"
       @dragleave="$emit('dragLeave')"
       @drop="$emit('drop', $event)"
     >
-      <input type="file" multiple :disabled="isTransferring" @change="$emit('selectFile', $event)" />
-      <span class="glyph" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15" stroke-linecap="round" />
-        </svg>
-      </span>
-      <span class="label">
-        <strong>{{ queue.length ? `${queue.length} ${copy.queued}` : copy.chooseFiles }}</strong>
-        <small>{{ queue.length ? formatBytes(queuedBytes) : copy.dropHintMulti }}</small>
-      </span>
-      <button
-        v-if="queue.length && !isTransferring"
-        class="clear"
-        type="button"
-        :aria-label="copy.clearFile"
-        @click.prevent.stop="$emit('clear')"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-          <path d="M7 7l10 10M17 7L7 17" stroke-linecap="round" />
-        </svg>
-      </button>
-    </label>
-
-    <!-- #2 The queue itself: each file removable until the batch starts. -->
-    <ul v-if="direction === 'send' && queue.length" class="queue">
-      <li v-for="(file, i) in queue" :key="file.name + file.size">
-        <span class="q-name">{{ file.name }}</span>
-        <span class="q-size tabular">{{ formatBytes(file.size) }}</span>
-        <button
-          v-if="!isTransferring"
-          type="button"
-          :aria-label="copy.removeFromQueue"
-          @click="$emit('removeQueued', i)"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
-            <path d="M7 7l10 10M17 7L7 17" stroke-linecap="round" />
+      <label v-if="!queue.length" class="drop-invite">
+        <input type="file" multiple :disabled="isTransferring" @change="$emit('selectFile', $event)" />
+        <span class="glyph" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15" stroke-linecap="round" />
           </svg>
-        </button>
-      </li>
-    </ul>
+        </span>
+        <span class="label">
+          <strong>{{ copy.chooseFiles }}</strong>
+          <small>{{ copy.dropHintMulti }}</small>
+        </span>
+      </label>
+
+      <template v-else>
+        <!-- #2 The queue itself: each file removable until the batch starts. -->
+        <ul class="queue">
+          <li v-for="(file, i) in queue" :key="file.name + file.size">
+            <span class="q-name">{{ file.name }}</span>
+            <span class="q-size tabular">{{ formatBytes(file.size) }}</span>
+            <button
+              v-if="!isTransferring"
+              type="button"
+              :aria-label="copy.removeFromQueue"
+              @click="$emit('removeQueued', i)"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                <path d="M7 7l10 10M17 7L7 17" stroke-linecap="round" />
+              </svg>
+            </button>
+          </li>
+        </ul>
+
+        <footer class="stage-foot">
+          <span class="summary tabular">{{ queue.length }} {{ copy.queued }} · {{ formatBytes(queuedBytes) }}</span>
+          <span class="foot-actions">
+            <label v-if="!isTransferring" class="more">
+              <input type="file" multiple @change="$emit('selectFile', $event)" />
+              {{ copy.addFiles }}
+            </label>
+            <button
+              v-if="!isTransferring"
+              type="button"
+              class="clear-all"
+              @click="$emit('clear')"
+            >
+              {{ copy.clearQueue }}
+            </button>
+          </span>
+        </footer>
+      </template>
+    </div>
 
     <div v-else class="await">
       <span class="glyph coral" aria-hidden="true">
@@ -262,17 +274,14 @@ function formatBytes(bytes: number) {
   font-size: 12px;
 }
 
+/* This one asks the user to fix something, so it must not blend into the
+   coral that merely means "the other device". */
 .peer.warn {
-  color: var(--coral-signal);
+  color: var(--error-red);
 }
 
-.drop,
+.stage-area,
 .await {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  min-height: 72px;
-  padding: var(--space-3);
   border-radius: var(--radius);
   border: 1px dashed var(--quiet-border);
   transition: border-color var(--duration-fast) var(--ease-out),
@@ -280,47 +289,107 @@ function formatBytes(bytes: number) {
     transform 220ms var(--ease-out);
 }
 
-.drop {
-  cursor: pointer;
+.await {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 72px;
+  padding: var(--space-3);
+  border-color: var(--coral-edge);
+  background: var(--coral-wash);
 }
 
-.drop.staged {
+/* Holding files it stops being an invitation and becomes a container. */
+.stage-area.filled {
+  border-style: solid;
   border-color: var(--lime-edge);
   background: var(--lime-wash);
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .drop:hover {
-    border-color: var(--lime-edge);
-    background: var(--lime-wash);
-  }
-}
-
 /* Dragging a file over lifts the zone toward the cursor — the target
    acknowledges the file before it is dropped. */
-.drop.over {
+.stage-area.over {
   border-style: solid;
   border-color: var(--lime-flow);
   background: var(--lime-wash);
   transform: scale(1.012);
 }
 
-.drop.over .glyph {
+.stage-area.over .glyph {
   transform: translateY(-2px) scale(1.06);
 }
 
-.drop.locked {
-  cursor: not-allowed;
+.stage-area.locked {
   opacity: 0.6;
 }
 
-.await {
-  border-color: var(--coral-edge);
-  background: var(--coral-wash);
+.drop-invite {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 72px;
+  padding: var(--space-3);
+  cursor: pointer;
 }
 
-.drop input {
+@media (hover: hover) and (pointer: fine) {
+  .stage-area:not(.filled):hover {
+    border-color: var(--lime-edge);
+    background: var(--lime-wash);
+  }
+}
+
+.stage-area.locked .drop-invite,
+.stage-area.locked .more {
+  cursor: not-allowed;
+}
+
+.drop-invite input,
+.more input {
   display: none;
+}
+
+.stage-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+}
+
+.summary {
+  color: var(--muted-gray);
+  font-size: 12px;
+}
+
+.foot-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* Secondary to the send button: text, not another filled control. */
+.more,
+.clear-all {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--muted-gray);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.more:hover {
+  color: var(--lime-flow);
+}
+
+.clear-all:hover {
+  color: var(--error-red);
 }
 
 .glyph {
@@ -368,47 +437,29 @@ function formatBytes(bytes: number) {
   margin-top: 2px;
 }
 
-.clear {
-  flex: none;
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  background: transparent;
-  border: 1px solid var(--quiet-border);
-  border-radius: var(--radius);
-  color: var(--muted-gray);
-}
-
-.clear:hover {
-  color: var(--soft-white);
-  border-color: var(--muted-gray);
-}
-
-.clear svg {
-  width: 15px;
-  height: 15px;
-}
-
 .queue {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: var(--space-2) var(--space-2) 0;
   display: grid;
   gap: 1px;
   max-height: 168px;
   overflow-y: auto;
 }
 
+/* Rows sit directly on the container: no second card inside the first. */
 .queue li {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-2) var(--space-3);
-  background: color-mix(in srgb, var(--slate-charcoal) 55%, transparent);
   border-radius: 3px;
   font-size: 13px;
+}
+
+.queue li + li {
+  border-top: 1px solid color-mix(in srgb, var(--quiet-border) 60%, transparent);
 }
 
 .q-name {
